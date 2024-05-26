@@ -1,9 +1,10 @@
 package extract
 
 import (
+	"encoding/json"
 	"fmt"
 
-	"github.com/finneas-io/data-pipeline/adapter/api"
+	"github.com/finneas-io/data-pipeline/adapter/apiclient"
 	"github.com/finneas-io/data-pipeline/adapter/bucket"
 	"github.com/finneas-io/data-pipeline/adapter/database"
 	"github.com/finneas-io/data-pipeline/adapter/logger"
@@ -14,7 +15,7 @@ import (
 type Service struct {
 	db     database.Database
 	bucket bucket.Bucket
-	api    api.Api
+	client apiclient.Client
 	queue  queue.Queue
 	logger logger.Logger
 }
@@ -22,11 +23,11 @@ type Service struct {
 func New(
 	db database.Database,
 	b bucket.Bucket,
-	a api.Api,
+	c apiclient.Client,
 	q queue.Queue,
 	l logger.Logger,
 ) *Service {
-	return &Service{db: db, bucket: b, api: a, queue: q, logger: l}
+	return &Service{db: db, bucket: b, client: c, queue: q, logger: l}
 }
 
 func (s *Service) LoadFilings() error {
@@ -44,7 +45,7 @@ func (s *Service) LoadFilings() error {
 		}
 
 		// all possible filings received from the API
-		all, err := s.api.GetFilings(cmp.Cik)
+		all, err := s.client.GetFilings(cmp.Cik)
 		if err != nil {
 			return err
 		}
@@ -57,9 +58,9 @@ func (s *Service) LoadFilings() error {
 				continue
 			}
 
-			v.MainFile, err = s.api.GetFile(cmp.Cik, v.Id, v.MainFile.Key)
+			v.MainFile, err = s.client.GetFile(cmp.Cik, v.Id, v.MainFile.Key)
 			if err != nil {
-				s.logger.Log(fmt.Sprintf("API error: %s", err.Error()))
+				s.logger.Log(fmt.Sprintf("API Client error: %s", err.Error()))
 				continue
 			}
 
@@ -68,7 +69,8 @@ func (s *Service) LoadFilings() error {
 
 		// load missing filings into database, bucket and queue
 		for _, v := range want {
-			b, err := v.Json()
+			msg := &queue.Message{Cik: cmp.Cik, Id: v.Id}
+			b, err := json.Marshal(msg)
 			if err != nil {
 				s.logger.Log(fmt.Sprintf("Serialization error: %s", err.Error()))
 				continue
@@ -83,7 +85,7 @@ func (s *Service) LoadFilings() error {
 				s.logger.Log(fmt.Sprintf("Bucket error: %s", err.Error()))
 				continue
 			}
-			err = s.db.InsertFiling(v)
+			err = s.db.InsertFiling(cmp.Cik, v)
 			if err != nil {
 				s.logger.Log(fmt.Sprintf("Database error: %s", err.Error()))
 				continue

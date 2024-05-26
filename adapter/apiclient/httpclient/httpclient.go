@@ -1,4 +1,4 @@
-package web
+package httpclient
 
 import (
 	"encoding/json"
@@ -12,17 +12,17 @@ import (
 	"github.com/finneas-io/data-pipeline/domain/filing"
 )
 
-type webApi struct {
+type httpClient struct {
 	client *http.Client
 }
 
-func New() *webApi {
-	return &webApi{client: &http.Client{}}
+func New() *httpClient {
+	return &httpClient{client: &http.Client{}}
 }
 
-func (w *webApi) GetCompany(cik string) (*filing.Company, error) {
+func (c *httpClient) GetCompany(cik string) (*filing.Company, error) {
 
-	data, err := w.get(fmt.Sprintf("https://data.sec.gov/submissions/CIK%s.json", cik))
+	data, err := c.get(fmt.Sprintf("https://data.sec.gov/submissions/CIK%s.json", cik))
 	if err != nil {
 		return nil, err
 	}
@@ -39,15 +39,15 @@ func (w *webApi) GetCompany(cik string) (*filing.Company, error) {
 
 	cmp := &filing.Company{Cik: cik, Name: res.Name}
 	for i := range res.Tickers {
-		cmp.Tickers = append(cmp.Tickers, &filing.Ticker{Value: res.Tickers[i], Exch: res.Exchs[i]})
+		cmp.Tickers = append(cmp.Tickers, &filing.Ticker{Value: res.Tickers[i], Exchange: res.Exchs[i]})
 	}
 
 	return cmp, nil
 }
 
-func (w *webApi) GetFilings(cik string) ([]*filing.Filing, error) {
+func (c *httpClient) GetFilings(cik string) ([]*filing.Filing, error) {
 
-	data, err := w.get(fmt.Sprintf("https://data.sec.gov/submissions/CIK%s.json", cik))
+	data, err := c.get(fmt.Sprintf("https://data.sec.gov/submissions/CIK%s.json", cik))
 	if err != nil {
 		return nil, err
 	}
@@ -68,7 +68,7 @@ func (w *webApi) GetFilings(cik string) ([]*filing.Filing, error) {
 
 	// get filings from non recent pages and check for duplicates
 	for _, old := range res.Filings.OldPages {
-		data, err := w.get(fmt.Sprintf("https://data.sec.gov/submissions/%s", old.Name))
+		data, err := c.get(fmt.Sprintf("https://data.sec.gov/submissions/%s", old.Name))
 		if err != nil {
 			return nil, err
 		}
@@ -130,7 +130,6 @@ func (d *filingData) transform(cik string) []*filing.Filing {
 		}
 
 		f := &filing.Filing{
-			CmpId:      cik,
 			Id:         strings.Replace(d.Ids[i], "-", "", -1),
 			MainFile:   &filing.File{Key: d.PrimDocs[i]},
 			Form:       v,
@@ -156,7 +155,7 @@ func getExtension(key string) (string, error) {
 	return result, nil
 }
 
-func (w *webApi) GetFile(cik, id, key string) (*filing.File, error) {
+func (w *httpClient) GetFile(cik, id, key string) (*filing.File, error) {
 
 	data, err := w.get(
 		fmt.Sprintf("https://www.sec.gov/Archives/edgar/data/%s/%s/index.json", cik, id),
@@ -210,7 +209,7 @@ func (r *fileResponse) transform() []*filing.File {
 	return files
 }
 
-func (w *webApi) get(url string) ([]byte, error) {
+func (w *httpClient) get(url string) ([]byte, error) {
 
 	// build request
 	req, err := http.NewRequest("GET", url, nil)

@@ -21,29 +21,28 @@ func New(db database.Database, q queue.Queue, l logger.Logger) *Service {
 }
 
 func (s *Service) GraphFilings() error {
-
 	for {
 
-		msg, err := s.queue.RecvMessage()
+		msgData, err := s.queue.RecvMessage()
 		if err != nil {
 			return err
 		}
-		data := &struct {
+		msg := &struct {
 			From string `json:"from"`
 			To   string `json:"to"`
 		}{}
-		err = json.Unmarshal(msg, data)
+		err = json.Unmarshal(msgData, msg)
 		if err != nil {
 			return err
 		}
 
-		from := &filing.Filing{Id: data.From}
+		from := &filing.Filing{Id: msg.From}
 		tbls, err := s.db.GetTables(from.Id)
 		if err != nil {
 			return err
 		}
 		from.Tables = tbls
-		to := &filing.Filing{Id: data.To}
+		to := &filing.Filing{Id: msg.To}
 		tbls, err = s.db.GetTables(to.Id)
 		if err != nil {
 			return err

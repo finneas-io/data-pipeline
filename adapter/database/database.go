@@ -6,9 +6,9 @@ type Database interface {
 	Close() error
 	InsertCompany(cmp *filing.Company) error
 	GetCompnies() ([]*filing.Company, error)
-	InsertFiling(filing *filing.Filing) error
+	InsertFiling(cik string, fil *filing.Filing) error
 	GetFilings(cik string) (map[string]*filing.Filing, error)
-	InsertTable(table *filing.Table, data, comp []byte) error
-	GetTables(id string) ([]*filing.Table, error)
+	InsertTable(filId string, table *filing.Table, data, comp []byte) error
+	GetTables(filId string) ([]*filing.Table, error)
 	InsertEdge(edge *filing.Edge) error
 }

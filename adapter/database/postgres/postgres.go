@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/finneas-io/data-pipeline/domain/filing"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -55,7 +56,7 @@ func (db *postgresDB) InsertCompany(cmp *filing.Company) error {
 			context.Background(),
 			`INSERT INTO ticker (value, exchange) VALUES ($1, $2);`,
 			t.Value,
-			t.Exch,
+			t.Exchange,
 		)
 		if err != nil {
 			return err
@@ -65,14 +66,8 @@ func (db *postgresDB) InsertCompany(cmp *filing.Company) error {
 	return nil
 }
 
-func nullTime(t time.Time) sql.NullTime {
-	if t.IsZero() {
-		return sql.NullTime{Valid: false}
-	}
-	return sql.NullTime{Valid: true, Time: t}
-}
-
 func (db *postgresDB) GetCompnies() ([]*filing.Company, error) {
+
 	rows, err := db.conn.Query(context.Background(), `SELECT cik FROM company;`)
 	if err != nil {
 		return nil, err
@@ -91,7 +86,14 @@ func (db *postgresDB) GetCompnies() ([]*filing.Company, error) {
 	return cmps, nil
 }
 
-func (db *postgresDB) InsertFiling(fil *filing.Filing) error {
+func nullTime(t time.Time) sql.NullTime {
+	if t.IsZero() {
+		return sql.NullTime{Valid: false}
+	}
+	return sql.NullTime{Valid: true, Time: t}
+}
+
+func (db *postgresDB) InsertFiling(cik string, fil *filing.Filing) error {
 	_, err := db.conn.Exec(
 		context.Background(),
 		`INSERT INTO filing (
@@ -102,7 +104,7 @@ func (db *postgresDB) InsertFiling(fil *filing.Filing) error {
 			last_modified, 
 			original_file
 		) VALUES ($1, $2, $3, $4, $5, $6);`,
-		fil.CmpId,
+		cik,
 		fil.Id,
 		fil.Form,
 		nullTime(fil.FilingDate),
@@ -128,7 +130,7 @@ func (db *postgresDB) GetFilings(cik string) (map[string]*filing.Filing, error) 
 
 	fils := make(map[string]*filing.Filing)
 	for rows.Next() {
-		f := &filing.Filing{CmpId: cik}
+		f := &filing.Filing{}
 		if err := rows.Scan(&f.Id); err != nil {
 			return nil, err
 		}
@@ -138,11 +140,19 @@ func (db *postgresDB) GetFilings(cik string) (map[string]*filing.Filing, error) 
 	return fils, nil
 }
 
-func (db *postgresDB) InsertTable(table *filing.Table, data, comp []byte) error {
-	_, err := db.conn.Exec(
+func (db *postgresDB) InsertTable(filId string, table *filing.Table, data, comp []byte) error {
+
+	id, err := uuid.NewV7()
+	if err != nil {
+		return err
+	}
+
+	_, err = db.conn.Exec(
 		context.Background(),
-		`INSERT INTO "table" (filing_id, index, faktor, data, compressed_data) VALUES ($1, $2, $3, $4, $5);`,
-		table.FilId,
+		`INSERT INTO "table" (id, filing_id, index, faktor, data, compressed_data) 
+			VALUES ($1, $2, $3, $4, $5, $6);`,
+		id,
+		filId,
 		table.Index,
 		table.Faktor,
 		data,
@@ -151,16 +161,17 @@ func (db *postgresDB) InsertTable(table *filing.Table, data, comp []byte) error 
 	if err != nil {
 		return err
 	}
+
 	return nil
 }
 
-func (db *postgresDB) GetTables(id string) ([]*filing.Table, error) {
+func (db *postgresDB) GetTables(filId string) ([]*filing.Table, error) {
 
 	rows, err := db.conn.Query(
 		context.Background(),
 		`SELECT id, compressed_data FROM "table"
 			WHERE filing_id = $1 AND compressed_data IS NOT NULL;`,
-		id,
+		filId,
 	)
 	if err != nil {
 		return nil, err
@@ -207,7 +218,7 @@ func (db *postgresDB) createTables() error {
 	}
 
 	_, err = db.conn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS ticker (
-		id SERIAL PRIMARY KEY,
+		id UUID PRIMARY KEY,
 		company_cik VARCHAR(10) REFERENCES company(cik) ON DELETE CASCADE,
 		value VARCHAR(10) UNIQUE NOT NULL,
 		exchange VARCHAR(20) DEFAULT NULL
@@ -229,7 +240,7 @@ func (db *postgresDB) createTables() error {
 	}
 
 	_, err = db.conn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS "table" (
-		id SERIAL PRIMARY KEY,
+		id UUID PRIMARY KEY,
 		filing_id VARCHAR(20) REFERENCES filing(id) ON DELETE CASCADE,
 		index INTEGER NOT NULL,
 		faktor TEXT DEFAULT NULL,
@@ -242,9 +253,10 @@ func (db *postgresDB) createTables() error {
 	}
 
 	_, err = db.conn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS edge (
-		"from" SERIAL NOT NULl,
-		"to" SERIAL NOT NULl,
+		"from" UUID NOT NULl,
+		"to" UUID NOT NULl,
 		weight INTEGER NOT NULL
+		UNIQUE("from", "to")
 	);`)
 	if err != nil {
 		return err

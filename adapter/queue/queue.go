@@ -5,3 +5,8 @@ type Queue interface {
 	RecvMessage() ([]byte, error)
 	Close() error
 }
+
+type Message struct {
+	Cik string `json:"cik"`
+	Id  string `json:"id"`
+}

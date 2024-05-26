@@ -31,21 +31,21 @@ func New(
 
 func (s *Service) SliceFilings() error {
 	for {
-		msg, err := s.cons.RecvMessage()
+		msgData, err := s.cons.RecvMessage()
 		if err != nil {
 			return err
 		}
-		fil := &filing.Filing{}
-		err = json.Unmarshal(msg, fil)
+		msg := &queue.Message{}
+		err = json.Unmarshal(msgData, msg)
 		if err != nil {
 			return err
 		}
 
-		data, err := s.bucket.GetObject(fil.Id + ".htm")
+		data, err := s.bucket.GetObject(msg.Id + ".htm")
 		if err != nil {
 			return err
 		}
-		fil.MainFile = &filing.File{Data: data}
+		fil := &filing.Filing{Id: msg.Id, MainFile: &filing.File{Data: data}}
 
 		err = fil.LoadTables()
 		if err != nil {
@@ -65,14 +65,14 @@ func (s *Service) SliceFilings() error {
 				s.logger.Log(fmt.Sprintf("Serialization error: %s", err.Error()))
 				continue
 			}
-			err = s.db.InsertTable(t, d, c)
+			err = s.db.InsertTable(fil.Id, t, d, c)
 			if err != nil {
 				s.logger.Log(fmt.Sprintf("Database error: %s", err.Error()))
 				continue
 			}
 		}
 
-		err = s.prod.SendMessage(msg)
+		err = s.prod.SendMessage(msgData)
 		if err != nil {
 			s.logger.Log(fmt.Sprintf("Queue error: %s", err.Error()))
 		}

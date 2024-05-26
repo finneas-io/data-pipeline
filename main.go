@@ -7,8 +7,8 @@ import (
 	"io/ioutil"
 	"os"
 
-	"github.com/finneas-io/data-pipeline/adapter/api"
-	"github.com/finneas-io/data-pipeline/adapter/api/web"
+	"github.com/finneas-io/data-pipeline/adapter/apiclient"
+	"github.com/finneas-io/data-pipeline/adapter/apiclient/httpclient"
 	"github.com/finneas-io/data-pipeline/adapter/bucket"
 	"github.com/finneas-io/data-pipeline/adapter/bucket/folder"
 	"github.com/finneas-io/data-pipeline/adapter/database"
@@ -60,12 +60,12 @@ func main() {
 	var l logger.Logger
 	l = console.New()
 
-	var a api.Api
-	a = web.New()
+	var c apiclient.Client
+	c = httpclient.New()
 
-	loadCompanies(db, a, l)
+	loadCompanies(db, c, l)
 
-	e := extract.New(db, b, a, extQueue, l)
+	e := extract.New(db, b, c, extQueue, l)
 	err = e.LoadFilings()
 	if err != nil {
 		panic(err)

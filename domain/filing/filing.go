@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/google/uuid"
 	"golang.org/x/net/html"
 )
 
@@ -20,17 +21,16 @@ type Company struct {
 }
 
 type Ticker struct {
-	Value string
-	Exch  string
+	Value    string
+	Exchange string
 }
 
 type Filing struct {
-	CmpId      string    `json:"cik"`
-	Id         string    `json:"id"`
-	Form       string    `json:"-"`
-	FilingDate time.Time `json:"-"`
-	MainFile   *File     `json:"-"`
-	Tables     []*Table  `json:"-"`
+	Id         string
+	Form       string
+	FilingDate time.Time
+	MainFile   *File
+	Tables     []*Table
 }
 
 type File struct {
@@ -40,8 +40,7 @@ type File struct {
 }
 
 type Table struct {
-	Id     int
-	FilId  string
+	Id     uuid.UUID
 	Index  int
 	Faktor string
 	Data   matrix
@@ -49,13 +48,99 @@ type Table struct {
 
 type matrix [][]string
 
-func (m matrix) Json() ([]byte, error) {
-	return json.Marshal(m)
+type Edge struct {
+	From   *Table
+	To     *Table
+	Weight int
+}
+
+func (f *Filing) LoadTables() error {
+
+	document, err := toHtml(f.MainFile.Data)
+	if err != nil {
+		return err
+	}
+
+	// get nodes of HTML node type 'table'
+	nodes := getNodes(document, "table")
+	tables := []*Table{}
+	for i, n := range nodes {
+		tables = append(
+			tables,
+			&Table{
+				Index:  i,
+				Faktor: searchStr(n, 8, 300, []string{"thousand", "million"}),
+				Data:   toMatrix(n),
+			},
+		)
+	}
+
+	f.Tables = tables
+	return nil
+}
+
+func (from *Filing) Connect(to *Filing) ([]*Edge, error) {
+
+	edges := []*Edge{}
+	for _, mainTbl := range from.Tables {
+		for _, t := range to.Tables {
+			weight := mainTbl.Data.getWeight(t.Data)
+			if weight < 2 {
+				continue
+			}
+			edges = append(
+				edges,
+				&Edge{From: mainTbl, To: t, Weight: weight},
+			)
+			edges = append(
+				edges,
+				&Edge{From: t, To: mainTbl, Weight: weight},
+			)
+		}
+	}
+
+	return edges, nil
+}
+
+func (f *Filing) Json() ([]byte, error) {
+	return json.Marshal(f)
 }
 
 func (m matrix) Compress() (matrix, error) {
 	newMtrx := m.stripCells().dropEmptyRows()
 	return newMtrx.dropDuplCols()
+}
+
+func (m matrix) Json() ([]byte, error) {
+	return json.Marshal(m)
+}
+
+/*
+Helper functions
+*/
+
+func (m matrix) getWeight(mat matrix) int {
+
+	lookup := make(map[string]bool)
+	for _, row := range m {
+		if len(row) < 1 {
+			continue
+		}
+		lookup[row[0]] = true
+	}
+
+	weight := 0
+	for _, row := range mat {
+		if len(row) < 1 {
+			continue
+		}
+		if lookup[row[0]] {
+			weight++
+			lookup[row[0]] = false
+		}
+	}
+
+	return weight
 }
 
 func (m matrix) stripCells() matrix {
@@ -139,89 +224,6 @@ func (m matrix) transpose() (matrix, error) {
 	}
 
 	return newMtrx, nil
-}
-
-func (f *Filing) LoadTables() error {
-
-	document, err := toHtml(f.MainFile.Data)
-	if err != nil {
-		return err
-	}
-
-	// get nodes of HTML node type 'table'
-	nodes := getNodes(document, "table")
-	tables := []*Table{}
-	for i, n := range nodes {
-		tables = append(
-			tables,
-			&Table{
-				FilId:  f.Id,
-				Index:  i,
-				Faktor: searchStr(n, 8, 300, []string{"thousand", "million"}),
-				Data:   toMatrix(n),
-			},
-		)
-	}
-
-	f.Tables = tables
-	return nil
-}
-
-type Edge struct {
-	From   *Table
-	To     *Table
-	Weight int
-}
-
-func (from *Filing) Connect(to *Filing) ([]*Edge, error) {
-
-	edges := []*Edge{}
-	for _, mainTbl := range from.Tables {
-		for _, t := range to.Tables {
-			weight := mainTbl.Data.getWeight(t.Data)
-			if weight < 2 {
-				continue
-			}
-			edges = append(
-				edges,
-				&Edge{From: mainTbl, To: t, Weight: weight},
-			)
-			edges = append(
-				edges,
-				&Edge{From: t, To: mainTbl, Weight: weight},
-			)
-		}
-	}
-
-	return edges, nil
-}
-
-func (m matrix) getWeight(mat matrix) int {
-
-	lookup := make(map[string]bool)
-	for _, row := range m {
-		if len(row) < 1 {
-			continue
-		}
-		lookup[row[0]] = true
-	}
-
-	weight := 0
-	for _, row := range mat {
-		if len(row) < 1 {
-			continue
-		}
-		if lookup[row[0]] {
-			weight++
-			lookup[row[0]] = false
-		}
-	}
-
-	return weight
-}
-
-func (f *Filing) Json() ([]byte, error) {
-	return json.Marshal(f)
 }
 
 func toMatrix(Table *html.Node) matrix {
