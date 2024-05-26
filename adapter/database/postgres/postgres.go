@@ -218,7 +218,7 @@ func (db *postgresDB) createTables() error {
 	}
 
 	_, err = db.conn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS ticker (
-		id UUID PRIMARY KEY,
+		id SERIAL PRIMARY KEY,
 		company_cik VARCHAR(10) REFERENCES company(cik) ON DELETE CASCADE,
 		value VARCHAR(10) UNIQUE NOT NULL,
 		exchange VARCHAR(20) DEFAULT NULL
@@ -255,7 +255,7 @@ func (db *postgresDB) createTables() error {
 	_, err = db.conn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS edge (
 		"from" UUID NOT NULl,
 		"to" UUID NOT NULl,
-		weight INTEGER NOT NULL
+		weight INTEGER NOT NULL,
 		UNIQUE("from", "to")
 	);`)
 	if err != nil {

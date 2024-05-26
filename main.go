@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os"
 
 	"github.com/finneas-io/data-pipeline/adapter/apiclient"
@@ -17,7 +16,6 @@ import (
 	"github.com/finneas-io/data-pipeline/adapter/logger/console"
 	"github.com/finneas-io/data-pipeline/adapter/queue"
 	"github.com/finneas-io/data-pipeline/adapter/queue/buffer"
-	"github.com/finneas-io/data-pipeline/domain/filing"
 	"github.com/finneas-io/data-pipeline/service/extract"
 	"github.com/finneas-io/data-pipeline/service/graph"
 	"github.com/finneas-io/data-pipeline/service/slice"
@@ -79,7 +77,7 @@ func main() {
 	}
 	sliQueue.Close()
 
-	err = mapFilings(sliQueue, graQueue)
+	err = convertMessage(sliQueue, graQueue)
 	if err != nil {
 		l.Log(fmt.Sprintf("Map Filings: %s", err.Error()))
 	}
@@ -92,26 +90,23 @@ func main() {
 	}
 }
 
-func mapFilings(cons queue.Queue, prod queue.Queue) error {
-	cmps := make(map[string][]*filing.Filing)
+func convertMessage(cons queue.Queue, prod queue.Queue) error {
+	cmps := make(map[string][]*queue.FilMessage)
 	for {
-		msg, err := cons.RecvMessage()
+		msgData, err := cons.RecvMessage()
 		if err != nil {
 			return err
 		}
-		fil := &filing.Filing{}
-		err = json.Unmarshal(msg, fil)
+		msg := &queue.FilMessage{}
+		err = json.Unmarshal(msgData, msg)
 		if err != nil {
 			return err
 		}
 
-		if cmps[fil.CmpId] != nil {
-			for _, f := range cmps[fil.CmpId] {
-				data := &struct {
-					From string `json:"from"`
-					To   string `json:"to"`
-				}{
-					From: fil.Id,
+		if cmps[msg.Cik] != nil {
+			for _, f := range cmps[msg.Cik] {
+				data := &queue.GraphMessage{
+					From: msg.Id,
 					To:   f.Id,
 				}
 				b, err := json.Marshal(data)
@@ -123,15 +118,15 @@ func mapFilings(cons queue.Queue, prod queue.Queue) error {
 					return err
 				}
 			}
-			cmps[fil.CmpId] = append(cmps[fil.CmpId], fil)
+			cmps[msg.Cik] = append(cmps[msg.Cik], msg)
 		} else {
-			cmps[fil.CmpId] = []*filing.Filing{fil}
+			cmps[msg.Cik] = []*queue.FilMessage{msg}
 		}
 	}
 }
 
-func loadCompanies(db database.Database, a api.Api, l logger.Logger) {
-	data, err := ioutil.ReadFile("./ciks.json")
+func loadCompanies(db database.Database, c apiclient.Client, l logger.Logger) {
+	data, err := os.ReadFile("./ciks.json")
 	if err != nil {
 		l.Log(fmt.Sprintf("File error while loading companies: %s", err.Error()))
 	}
@@ -142,8 +137,8 @@ func loadCompanies(db database.Database, a api.Api, l logger.Logger) {
 	if err != nil {
 		l.Log(fmt.Sprintf("File error while loading companies: %s", err.Error()))
 	}
-	for _, c := range wrapper.Ciks {
-		cmp, err := a.GetCompany(c)
+	for _, v := range wrapper.Ciks {
+		cmp, err := c.GetCompany(v)
 		if err != nil {
 			l.Log(fmt.Sprintf("API error while loading companies: %s", err.Error()))
 			continue

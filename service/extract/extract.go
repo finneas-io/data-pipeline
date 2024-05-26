@@ -69,7 +69,7 @@ func (s *Service) LoadFilings() error {
 
 		// load missing filings into database, bucket and queue
 		for _, v := range want {
-			msg := &queue.Message{Cik: cmp.Cik, Id: v.Id}
+			msg := &queue.FilMessage{Cik: cmp.Cik, Id: v.Id}
 			b, err := json.Marshal(msg)
 			if err != nil {
 				s.logger.Log(fmt.Sprintf("Serialization error: %s", err.Error()))

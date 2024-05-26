@@ -42,6 +42,7 @@ func (s *Service) GraphFilings() error {
 			return err
 		}
 		from.Tables = tbls
+
 		to := &filing.Filing{Id: msg.To}
 		tbls, err = s.db.GetTables(to.Id)
 		if err != nil {

@@ -92,10 +92,6 @@ func (from *Filing) Connect(to *Filing) ([]*Edge, error) {
 				edges,
 				&Edge{From: mainTbl, To: t, Weight: weight},
 			)
-			edges = append(
-				edges,
-				&Edge{From: t, To: mainTbl, Weight: weight},
-			)
 		}
 	}
 

@@ -35,7 +35,7 @@ func (s *Service) SliceFilings() error {
 		if err != nil {
 			return err
 		}
-		msg := &queue.Message{}
+		msg := &queue.FilMessage{}
 		err = json.Unmarshal(msgData, msg)
 		if err != nil {
 			return err

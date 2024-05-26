@@ -6,7 +6,12 @@ type Queue interface {
 	Close() error
 }
 
-type Message struct {
+type FilMessage struct {
 	Cik string `json:"cik"`
 	Id  string `json:"id"`
+}
+
+type GraphMessage struct {
+	From string `json:"from"`
+	To   string `json:"to"`
 }
