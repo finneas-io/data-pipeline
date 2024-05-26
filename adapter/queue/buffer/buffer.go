@@ -1,13 +1,12 @@
 package buffer
 
 import (
+	"errors"
 	"sync"
-
-	"github.com/finneas-io/premise/queue"
 )
 
 type buffer struct {
-	msgs  []string
+	msgs  [][]byte
 	mutex sync.Mutex
 	cond  *sync.Cond
 	drain bool
@@ -19,7 +18,7 @@ func New() *buffer {
 	return b
 }
 
-func (q *buffer) SendMessage(msg string) error {
+func (q *buffer) SendMessage(msg []byte) error {
 	q.mutex.Lock()
 	q.msgs = append(q.msgs, msg)
 	q.mutex.Unlock()
@@ -29,7 +28,7 @@ func (q *buffer) SendMessage(msg string) error {
 	return nil
 }
 
-func (q *buffer) ReceiveMessage() (string, error) {
+func (q *buffer) RecvMessage() ([]byte, error) {
 	q.mutex.Lock()
 	defer q.mutex.Unlock()
 
@@ -37,7 +36,7 @@ func (q *buffer) ReceiveMessage() (string, error) {
 	for len(q.msgs) < 1 {
 		if q.drain {
 			// no new messages will enter the buffer
-			return "", &queue.ErrQueueClosed{}
+			return nil, errors.New("Queue has been drained")
 		}
 		q.cond.Wait()
 	}
@@ -48,8 +47,9 @@ func (q *buffer) ReceiveMessage() (string, error) {
 	return msg, nil
 }
 
-func (q *buffer) Drain() {
+func (q *buffer) Close() error {
 	q.drain = true
 	// wake up all waiting routines to let them recheck the drain flag
 	q.cond.Broadcast()
+	return nil
 }

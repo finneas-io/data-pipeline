@@ -1,95 +1,165 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
-	"log"
-	"sync"
+	"fmt"
+	"io/ioutil"
+	"os"
 
-	"github.com/finneas-io/premise/api"
-	"github.com/finneas-io/premise/api/web"
-	"github.com/finneas-io/premise/bucket"
-	"github.com/finneas-io/premise/bucket/folder"
-	"github.com/finneas-io/premise/database"
-	"github.com/finneas-io/premise/database/scylla"
-	"github.com/finneas-io/premise/extract"
-	"github.com/finneas-io/premise/graph"
-	"github.com/finneas-io/premise/queue"
-	"github.com/finneas-io/premise/queue/buffer"
-	"github.com/finneas-io/premise/slice"
+	"github.com/finneas-io/data-pipeline/adapter/api"
+	"github.com/finneas-io/data-pipeline/adapter/api/web"
+	"github.com/finneas-io/data-pipeline/adapter/bucket"
+	"github.com/finneas-io/data-pipeline/adapter/bucket/folder"
+	"github.com/finneas-io/data-pipeline/adapter/database"
+	"github.com/finneas-io/data-pipeline/adapter/database/postgres"
+	"github.com/finneas-io/data-pipeline/adapter/logger"
+	"github.com/finneas-io/data-pipeline/adapter/logger/console"
+	"github.com/finneas-io/data-pipeline/adapter/queue"
+	"github.com/finneas-io/data-pipeline/adapter/queue/buffer"
+	"github.com/finneas-io/data-pipeline/domain/filing"
+	"github.com/finneas-io/data-pipeline/service/extract"
+	"github.com/finneas-io/data-pipeline/service/graph"
+	"github.com/finneas-io/data-pipeline/service/slice"
+	"github.com/joho/godotenv"
 )
 
 func main() {
-	var db database.Database
-	db, err := scylla.NewScyllaDB("localhost", 9042)
+	err := godotenv.Load()
 	if err != nil {
-		log.Fatal(err.Error())
+		panic(err)
+	}
+
+	var db database.Database
+	db, err = postgres.New(
+		envOrPanic("DB_HOST"),
+		envOrPanic("DB_PORT"),
+		envOrPanic("DB_NAME"),
+		envOrPanic("DB_USER"),
+		envOrPanic("DB_PASS"),
+	)
+	if err != nil {
+		panic(err)
 	}
 	defer db.Close()
-	a := api.New(web.NewClient())
-	var sliceQueue queue.Queue
-	sliceQueue = buffer.New()
-	var graphQueue queue.Queue
-	graphQueue = buffer.New()
+
 	var b bucket.Bucket
-	b = folder.New("../filings")
+	b = folder.New(
+		envOrPanic("B_PATH"),
+	)
 
-	numSlicer := 5
-	sliceWg := &sync.WaitGroup{}
-	sliceWg.Add(numSlicer)
-	for i := 0; i < numSlicer; i++ {
-		s := slice.NewService(db, b, graphQueue)
-		go slicerWorker(s, sliceQueue, sliceWg)
-	}
+	var extQueue queue.Queue
+	extQueue = buffer.New()
 
-	numGrapher := 5
-	graphWg := &sync.WaitGroup{}
-	graphWg.Add(numGrapher)
-	for i := 0; i < numGrapher; i++ {
-		s := graph.NewService(db)
-		go grapherWorker(s, graphQueue, sliceWg)
-	}
-	extractor := extract.NewService(a, db, b, sliceQueue)
-	err = extractor.LoadMissingFilings("0001652044")
+	var sliQueue queue.Queue
+	sliQueue = buffer.New()
+
+	var graQueue queue.Queue
+	graQueue = buffer.New()
+
+	var l logger.Logger
+	l = console.New()
+
+	var a api.Api
+	a = web.New()
+
+	loadCompanies(db, a, l)
+
+	e := extract.New(db, b, a, extQueue, l)
+	err = e.LoadFilings()
 	if err != nil {
-		log.Fatal(err.Error())
+		panic(err)
 	}
+	extQueue.Close()
 
-	sliceQueue.Drain()
-	sliceWg.Wait()
-	graphQueue.Drain()
-	graphWg.Wait()
+	s := slice.New(db, b, extQueue, sliQueue, l)
+	err = s.SliceFilings()
+	if err != nil {
+		l.Log(fmt.Sprintf("Slice Filings: %s", err.Error()))
+	}
+	sliQueue.Close()
 
-	log.Println("Exited properly")
+	err = mapFilings(sliQueue, graQueue)
+	if err != nil {
+		l.Log(fmt.Sprintf("Map Filings: %s", err.Error()))
+	}
+	graQueue.Close()
+
+	g := graph.New(db, graQueue, l)
+	err = g.GraphFilings()
+	if err != nil {
+		l.Log(fmt.Sprintf("Graph Filings: %s", err.Error()))
+	}
 }
 
-func slicerWorker(s *slice.Service, q queue.Queue, wg *sync.WaitGroup) error {
-	defer wg.Done()
+func mapFilings(cons queue.Queue, prod queue.Queue) error {
+	cmps := make(map[string][]*filing.Filing)
 	for {
-		msg, err := q.ReceiveMessage()
-		if err != nil && errors.Is(err, &queue.ErrQueueClosed{}) {
-			// queue has been drained
-			break
-		}
-		err = s.Slice(msg)
+		msg, err := cons.RecvMessage()
 		if err != nil {
 			return err
 		}
-	}
-	return nil
-}
-
-func grapherWorker(s *graph.Service, q queue.Queue, wg *sync.WaitGroup) error {
-	defer wg.Done()
-	for {
-		msg, err := q.ReceiveMessage()
-		if err != nil && errors.Is(err, &queue.ErrQueueClosed{}) {
-			// queue has been drained
-			break
-		}
-		err = s.Build(msg)
+		fil := &filing.Filing{}
+		err = json.Unmarshal(msg, fil)
 		if err != nil {
 			return err
 		}
+
+		if cmps[fil.CmpId] != nil {
+			for _, f := range cmps[fil.CmpId] {
+				data := &struct {
+					From string `json:"from"`
+					To   string `json:"to"`
+				}{
+					From: fil.Id,
+					To:   f.Id,
+				}
+				b, err := json.Marshal(data)
+				if err != nil {
+					return err
+				}
+				err = prod.SendMessage(b)
+				if err != nil {
+					return err
+				}
+			}
+			cmps[fil.CmpId] = append(cmps[fil.CmpId], fil)
+		} else {
+			cmps[fil.CmpId] = []*filing.Filing{fil}
+		}
 	}
-	return nil
+}
+
+func loadCompanies(db database.Database, a api.Api, l logger.Logger) {
+	data, err := ioutil.ReadFile("./ciks.json")
+	if err != nil {
+		l.Log(fmt.Sprintf("File error while loading companies: %s", err.Error()))
+	}
+	wrapper := &struct {
+		Ciks []string `json:"ciks"`
+	}{}
+	err = json.Unmarshal(data, wrapper)
+	if err != nil {
+		l.Log(fmt.Sprintf("File error while loading companies: %s", err.Error()))
+	}
+	for _, c := range wrapper.Ciks {
+		cmp, err := a.GetCompany(c)
+		if err != nil {
+			l.Log(fmt.Sprintf("API error while loading companies: %s", err.Error()))
+			continue
+		}
+		err = db.InsertCompany(cmp)
+		if err != nil {
+			l.Log(fmt.Sprintf("Database error while loading companies: %s", err.Error()))
+			continue
+		}
+	}
+}
+
+func envOrPanic(key string) string {
+	value := os.Getenv(key)
+	if len(value) < 1 {
+		panic(errors.New(fmt.Sprintf("Environment variable '%s' missing", key)))
+	}
+	return value
 }
