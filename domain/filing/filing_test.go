@@ -91,3 +91,27 @@ func TestDropDuplCols(t *testing.T) {
 		})
 	}
 }
+
+/*
+func TestMergeCols(t *testing.T) {
+	tests := []struct {
+		name  string
+		input matrix
+		want  matrix
+	}{
+		{
+			"One duplicate",
+			matrix{
+				{"test", "test", "hihi", "hoho"},
+				{"2", "2", "2", "2"},
+				{"2", "2", "2", "2"},
+			},
+			matrix{
+				{"test", "hihi", "hoho"},
+				{"2", "2", "2"},
+				{"2", "2", "2"},
+			},
+		},
+	}
+}
+*/

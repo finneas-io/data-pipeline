@@ -103,8 +103,12 @@ func (f *Filing) Json() ([]byte, error) {
 }
 
 func (m matrix) Compress() (matrix, error) {
-	newMtrx := m.stripCells().dropEmptyRows()
-	return newMtrx.dropDuplCols()
+	result := m.stripCells().dropEmptyRows()
+	result, err := result.dropDuplCols()
+	if err != nil {
+		return nil, err
+	}
+	return result.mergeCols()
 }
 
 func (m matrix) Json() ([]byte, error) {
@@ -151,9 +155,13 @@ func (m matrix) stripCells() matrix {
 				//  10: line feed '\n' in ASCII
 				//  11: vertical tab in ASCII
 				//  13: carriage return '\r' in ASCII
-				if char == 160 || char == 9 || char == 10 || char == 11 || char == 13 {
+				//  32: space in ASCII
+				if char == 160 || char == 9 || char == 10 || char == 11 || char == 13 || char == 32 {
 					if len(c)-1 == j {
 						break
+					}
+					if j < 1 {
+						continue
 					}
 					newCell += " "
 					continue
@@ -177,6 +185,75 @@ func (m matrix) dropEmptyRows() matrix {
 		}
 	}
 	return newMtrx
+}
+
+func (m matrix) mergeCols() (matrix, error) {
+
+	headIdx := 0
+	for _, r := range m {
+		if isHeader(r) {
+			headIdx++
+			continue
+		}
+		break
+	}
+
+	if headIdx < 1 {
+		return m, nil
+	}
+
+	// initialize new matrix
+	newMtrx := matrix{}
+	for _, r := range m {
+		if len(r) < 1 {
+			return nil, errors.New("Matrix is ragged")
+		}
+		newMtrx = append(newMtrx, []string{r[0]})
+	}
+
+	for i := 1; i < len(m[0]); i++ {
+
+		// check if column and previous column can be merged
+		merge := true
+		for j := 0; j < headIdx; j++ {
+			if len(m[j]) <= i {
+				return nil, errors.New("Matrix is ragged")
+			}
+			if m[j][i] != m[j][i-1] && len(m[j][i]) > 0 {
+				merge = false
+				break
+			}
+		}
+
+		if merge {
+			for j := 0; j < len(m); j++ {
+				if len(m[j]) <= i {
+					return nil, errors.New("Matrix is ragged")
+				}
+				if m[j][i] == m[j][i-1] {
+					continue
+				}
+				newMtrx[j][len(newMtrx[j])-1] += m[j][i]
+			}
+		} else {
+			// columns can't be merged and we just append the new column
+			for j := 0; j < len(m); j++ {
+				newMtrx[j] = append(newMtrx[j], m[j][i])
+			}
+		}
+	}
+
+	return newMtrx, nil
+}
+
+func isHeader(row []string) bool {
+	if len(row) < 1 {
+		return false
+	}
+	if len(row[0]) < 1 {
+		return true
+	}
+	return false
 }
 
 func (m matrix) dropDuplCols() (matrix, error) {

@@ -1,5 +1,6 @@
 .env
 bin
+test
 
 # Editor directories and files
 .vscode/*
