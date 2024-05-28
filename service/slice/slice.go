@@ -54,21 +54,29 @@ func (s *Service) SliceFilings() error {
 
 		for _, t := range fil.Tables {
 			// some tables are ragged
-			comp, _ := t.Data.Compress()
 			d, err := t.Data.Json()
 			if err != nil {
 				s.logger.Log(fmt.Sprintf("Serialization error: %s", err.Error()))
 				continue
 			}
-			c, err := comp.Json()
+			id, err := s.db.InsertTable(fil.Id, t, d)
+			if err != nil {
+				s.logger.Log(fmt.Sprintf("Database error: %s", err.Error()))
+				continue
+			}
+			t.Id = id
+			err = t.Compress()
+			if err != nil {
+				continue
+			}
+			d, err = t.Data.Json()
 			if err != nil {
 				s.logger.Log(fmt.Sprintf("Serialization error: %s", err.Error()))
 				continue
 			}
-			err = s.db.InsertTable(fil.Id, t, d, c)
+			err = s.db.InsertCompTable(t, d)
 			if err != nil {
 				s.logger.Log(fmt.Sprintf("Database error: %s", err.Error()))
-				continue
 			}
 		}
 

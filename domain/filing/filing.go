@@ -40,10 +40,11 @@ type File struct {
 }
 
 type Table struct {
-	Id     uuid.UUID
-	Index  int
-	Faktor string
-	Data   matrix
+	Id      uuid.UUID
+	HeadIdx int
+	Index   int
+	Faktor  string
+	Data    matrix
 }
 
 type matrix [][]string
@@ -65,12 +66,14 @@ func (f *Filing) LoadTables() error {
 	nodes := getNodes(document, "table")
 	tables := []*Table{}
 	for i, n := range nodes {
+		mat, head := convert(n)
 		tables = append(
 			tables,
 			&Table{
-				Index:  i,
-				Faktor: searchStr(n, 8, 300, []string{"thousand", "million"}),
-				Data:   toMatrix(n),
+				Index:   i,
+				Faktor:  searchStr(n, 8, 300, []string{"thousand", "million"}),
+				HeadIdx: head,
+				Data:    mat,
 			},
 		)
 	}
@@ -102,13 +105,20 @@ func (f *Filing) Json() ([]byte, error) {
 	return json.Marshal(f)
 }
 
-func (m matrix) Compress() (matrix, error) {
-	result := m.stripCells().dropEmptyRows()
-	result, err := result.dropDuplCols()
+func (t *Table) Compress() error {
+	mat := t.Data.stripCells()
+	mat, headIdx := mat.dropEmptyRows(t.HeadIdx)
+	mat, err := mat.dropDuplCols()
 	if err != nil {
-		return nil, err
+		return err
 	}
-	return result.mergeCols()
+	mat, err = mat.mergeCols(headIdx)
+	if err != nil {
+		return err
+	}
+	t.Data = mat
+	t.HeadIdx = headIdx
+	return nil
 }
 
 func (m matrix) Json() ([]byte, error) {
@@ -150,17 +160,15 @@ func (m matrix) stripCells() matrix {
 		for _, c := range r {
 			newCell := ""
 			for j, char := range c {
-				// 160: no break space in ASCII
-				//   9: horizontal tab in ASCII
-				//  10: line feed '\n' in ASCII
-				//  11: vertical tab in ASCII
-				//  13: carriage return '\r' in ASCII
-				//  32: space in ASCII
-				if char == 160 || char == 9 || char == 10 || char == 11 || char == 13 || char == 32 {
+				// check ASCII table to understand this and good luck
+				if char < 33 || char > 126 {
 					if len(c)-1 == j {
 						break
 					}
-					if j < 1 {
+					if len(newCell) < 1 {
+						continue
+					}
+					if newCell[len(newCell)-1:] == " " {
 						continue
 					}
 					newCell += " "
@@ -174,31 +182,28 @@ func (m matrix) stripCells() matrix {
 	return newMtrx
 }
 
-func (m matrix) dropEmptyRows() matrix {
+func (m matrix) dropEmptyRows(head int) (matrix, int) {
 	newMtrx := matrix{}
+	newHead := head
 	for i := range m {
+		empty := true
 		for j := range m[i] {
 			if len(m[i][j]) > 0 {
 				newMtrx = append(newMtrx, m[i])
+				empty = false
 				break
 			}
 		}
+		if empty && i <= head {
+			newHead--
+		}
 	}
-	return newMtrx
+	return newMtrx, newHead
 }
 
-func (m matrix) mergeCols() (matrix, error) {
+func (m matrix) mergeCols(head int) (matrix, error) {
 
-	headIdx := 0
-	for _, r := range m {
-		if isHeader(r) {
-			headIdx++
-			continue
-		}
-		break
-	}
-
-	if headIdx < 1 {
+	if head < 1 {
 		return m, nil
 	}
 
@@ -215,7 +220,7 @@ func (m matrix) mergeCols() (matrix, error) {
 
 		// check if column and previous column can be merged
 		merge := true
-		for j := 0; j < headIdx; j++ {
+		for j := 0; j < head; j++ {
 			if len(m[j]) <= i {
 				return nil, errors.New("Matrix is ragged")
 			}
@@ -299,13 +304,27 @@ func (m matrix) transpose() (matrix, error) {
 	return newMtrx, nil
 }
 
-func toMatrix(Table *html.Node) matrix {
+func convert(table *html.Node) (matrix, int) {
 	matrix := matrix{}
+	headIdx := 0
+	counting := true
 
 	// 'tr' usually the element type of rows in an HTML Table and
 	// 'td' usually the element type of columns in an HTML Table row
-	rows := getNodes(Table, "tr")
+	rows := getNodes(table, "tr")
 	for i, r := range rows {
+		for _, a := range r.Attr {
+			// check if the row is colored to find out where the row header ends
+			if a.Key == "style" {
+				if strings.Contains(a.Val, "bgcolor:") ||
+					strings.Contains(a.Val, "background-color:") ||
+					strings.Contains(a.Val, "background:") {
+					counting = false
+					break
+				}
+			}
+		}
+
 		matrix = append(matrix, []string{})
 		cols := getNodes(r, "td")
 		for _, c := range cols {
@@ -313,10 +332,17 @@ func toMatrix(Table *html.Node) matrix {
 			// find out the width of the column in this row
 			cSpan := 1
 			for _, a := range c.Attr {
+				if a.Key == "style" {
+					if strings.Contains(a.Val, "bgcolor:") ||
+						strings.Contains(a.Val, "background-color:") ||
+						strings.Contains(a.Val, "background:") {
+						counting = false
+					}
+				}
 				if a.Key == "colspan" {
 					v, err := strconv.Atoi(a.Val)
 					if err != nil {
-						break
+						continue
 					}
 					cSpan = v
 				}
@@ -326,9 +352,14 @@ func toMatrix(Table *html.Node) matrix {
 				matrix[i] = append(matrix[i], getText(c))
 			}
 		}
+
+		// increment if we are still counting and haven't found a colored row
+		if counting {
+			headIdx += 1
+		}
 	}
 
-	return matrix
+	return matrix, headIdx
 }
 
 func getText(node *html.Node) string {

@@ -140,7 +140,32 @@ func (db *postgresDB) GetFilings(cik string) (map[string]*filing.Filing, error) 
 	return fils, nil
 }
 
-func (db *postgresDB) InsertTable(filId string, table *filing.Table, data, comp []byte) error {
+func (db *postgresDB) InsertTable(filId string, table *filing.Table, data []byte) (uuid.UUID, error) {
+
+	id, err := uuid.NewV7()
+	if err != nil {
+		return uuid.UUID{}, err
+	}
+
+	_, err = db.conn.Exec(
+		context.Background(),
+		`INSERT INTO "table" (id, filing_id, index, faktor, header_index, data) 
+			VALUES ($1, $2, $3, $4, $5, $6);`,
+		id,
+		filId,
+		table.Index,
+		table.Faktor,
+		table.HeadIdx,
+		data,
+	)
+	if err != nil {
+		return uuid.UUID{}, err
+	}
+
+	return id, nil
+}
+
+func (db *postgresDB) InsertCompTable(table *filing.Table, data []byte) error {
 
 	id, err := uuid.NewV7()
 	if err != nil {
@@ -149,14 +174,12 @@ func (db *postgresDB) InsertTable(filId string, table *filing.Table, data, comp 
 
 	_, err = db.conn.Exec(
 		context.Background(),
-		`INSERT INTO "table" (id, filing_id, index, faktor, data, compressed_data) 
-			VALUES ($1, $2, $3, $4, $5, $6);`,
+		`INSERT INTO compressed_table (id, original_id, header_index, data) 
+			VALUES ($1, $2, $3, $4);`,
 		id,
-		filId,
-		table.Index,
-		table.Faktor,
+		table.Id,
+		table.HeadIdx,
 		data,
-		comp,
 	)
 	if err != nil {
 		return err
@@ -169,8 +192,8 @@ func (db *postgresDB) GetTables(filId string) ([]*filing.Table, error) {
 
 	rows, err := db.conn.Query(
 		context.Background(),
-		`SELECT id, compressed_data FROM "table"
-			WHERE filing_id = $1 AND compressed_data IS NOT NULL;`,
+		`SELECT compressed_table.id, compressed_table.data FROM "table", compressed_table
+			WHERE "table".filing_id = $1 AND compressed_table.original_id = "table".id;`,
 		filId,
 	)
 	if err != nil {
@@ -242,19 +265,29 @@ func (db *postgresDB) createTables() error {
 	_, err = db.conn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS "table" (
 		id UUID PRIMARY KEY,
 		filing_id VARCHAR(20) REFERENCES filing(id) ON DELETE CASCADE,
+		header_index INTEGER NOT NULL,
 		index INTEGER NOT NULL,
 		faktor TEXT DEFAULT NULL,
 		data JSONB NOT NULL,
-		compressed_data JSONB DEFAULT NULL,
 		UNIQUE(filing_id, index)
 	);`)
 	if err != nil {
 		return err
 	}
 
+	_, err = db.conn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS compressed_table (
+		id UUID PRIMARY KEY,
+		original_id UUID REFERENCES "table"(id) ON DELETE CASCADE,
+		header_index INTEGER NOT NULL,
+		data JSONB NOT NULL
+	);`)
+	if err != nil {
+		return err
+	}
+
 	_, err = db.conn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS edge (
-		"from" UUID NOT NULl,
-		"to" UUID NOT NULl,
+		"from" UUID REFERENCES compressed_table(id) NOT NULl,
+		"to" UUID REFERENCES compressed_table(id) NOT NULl,
 		weight INTEGER NOT NULL,
 		UNIQUE("from", "to")
 	);`)
