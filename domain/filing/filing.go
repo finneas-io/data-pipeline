@@ -82,12 +82,12 @@ func (f *Filing) LoadTables() error {
 	return nil
 }
 
-func (from *Filing) Connect(to *Filing) ([]*Edge, error) {
+func Connect(from *Filing, to *Filing) ([]*Edge, error) {
 
 	edges := []*Edge{}
 	for _, mainTbl := range from.Tables {
 		for _, t := range to.Tables {
-			weight := mainTbl.Data.getWeight(t.Data)
+			weight := getWeight(mainTbl, t)
 			if weight < 2 {
 				continue
 			}
@@ -99,6 +99,16 @@ func (from *Filing) Connect(to *Filing) ([]*Edge, error) {
 	}
 
 	return edges, nil
+}
+
+func Join(first *Table, second *Table) (*Table, error) {
+	if first == nil || second == nil {
+		return nil, errors.New("Tables must be not nil")
+	}
+
+	table := &Table{}
+
+	return table, nil
 }
 
 func (f *Filing) Json() ([]byte, error) {
@@ -129,24 +139,56 @@ func (m matrix) Json() ([]byte, error) {
 Helper functions
 */
 
-func (m matrix) getWeight(mat matrix) int {
+func getWeight(first, second *Table) int {
 
-	lookup := make(map[string]bool)
-	for _, row := range m {
+	rowLookup := make(map[string]bool)
+	for _, row := range first.Data {
 		if len(row) < 1 {
 			continue
 		}
-		lookup[row[0]] = true
+		rowLookup[row[0]] = true
 	}
 
 	weight := 0
-	for _, row := range mat {
+	for _, row := range second.Data {
 		if len(row) < 1 {
 			continue
 		}
-		if lookup[row[0]] {
+		if rowLookup[row[0]] {
 			weight++
-			lookup[row[0]] = false
+			rowLookup[row[0]] = false
+		}
+	}
+
+	if len(first.Data) < 1 || len(first.Data) >= first.HeadIdx || len(second.Data) >= second.HeadIdx {
+		return weight
+	}
+
+	columnLookup := []string{}
+	for i := 0; i < first.HeadIdx; i++ {
+		for j, column := range first.Data[i] {
+			if j == 0 {
+				continue
+			}
+			columnLookup = append(columnLookup, column)
+		}
+	}
+
+	for i := 0; i < second.HeadIdx; i++ {
+		for j, column := range second.Data[i] {
+			if j == 0 {
+				continue
+			}
+			for k := 0; k < len(columnLookup); k++ {
+				if columnLookup[k] == column {
+					columnLookup = append(columnLookup[:k], columnLookup[k+1:]...)
+					weight++
+					break
+				}
+			}
+		}
+		if len(columnLookup) < 1 {
+			break
 		}
 	}
 
@@ -313,8 +355,13 @@ func convert(table *html.Node) (matrix, int) {
 	// 'td' usually the element type of columns in an HTML Table row
 	rows := getNodes(table, "tr")
 	for i, r := range rows {
+
 		for _, a := range r.Attr {
 			// check if the row is colored to find out where the row header ends
+			if a.Key == "bgcolor" || a.Key == "background-color" || a.Key == "background" {
+				counting = false
+				break
+			}
 			if a.Key == "style" {
 				if strings.Contains(a.Val, "bgcolor:") ||
 					strings.Contains(a.Val, "background-color:") ||

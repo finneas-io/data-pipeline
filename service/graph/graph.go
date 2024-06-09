@@ -50,7 +50,7 @@ func (s *Service) GraphFilings() error {
 		}
 		to.Tables = tbls
 
-		edges, err := from.Connect(to)
+		edges, err := filing.Connect(from, to)
 		if err != nil {
 			return err
 		}
