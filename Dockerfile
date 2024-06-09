@@ -6,11 +6,17 @@ COPY go.mod go.sum ./
 
 COPY main.go ./
 
+COPY .env ./
+
+COPY ciks.json ./
+
 COPY domain ./domain
 
 COPY adapter ./adapter
 
 COPY service ./service
+
+RUN mkdir test
 
 RUN go build -o main main.go
 
