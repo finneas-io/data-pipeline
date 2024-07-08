@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/finneas-io/data-pipeline/adapter/apiclient"
-	"github.com/finneas-io/data-pipeline/adapter/bucket"
 	"github.com/finneas-io/data-pipeline/adapter/database"
 	"github.com/finneas-io/data-pipeline/adapter/logger"
 	"github.com/finneas-io/data-pipeline/adapter/queue"
@@ -14,7 +13,6 @@ import (
 
 type Service struct {
 	db     database.Database
-	bucket bucket.Bucket
 	client apiclient.Client
 	queue  queue.Queue
 	logger logger.Logger
@@ -22,16 +20,16 @@ type Service struct {
 
 func New(
 	db database.Database,
-	b bucket.Bucket,
 	c apiclient.Client,
 	q queue.Queue,
 	l logger.Logger,
 ) *Service {
-	return &Service{db: db, bucket: b, client: c, queue: q, logger: l}
+	return &Service{db: db, client: c, queue: q, logger: l}
 }
 
 func (s *Service) LoadFilings() error {
-	cmps, err := s.db.GetCompnies()
+
+	cmps, err := s.db.GetCompanies()
 	if err != nil {
 		return err
 	}
@@ -41,13 +39,15 @@ func (s *Service) LoadFilings() error {
 		// filings in the database returned as look up map
 		got, err := s.db.GetFilings(cmp.Cik)
 		if err != nil {
-			return err
+			s.logger.Log(fmt.Sprintf("Database error: %s", err.Error()))
+			continue
 		}
 
 		// all possible filings received from the API
 		all, err := s.client.GetFilings(cmp.Cik)
 		if err != nil {
-			return err
+			s.logger.Log(fmt.Sprintf("API Client error: %s", err.Error()))
+			continue
 		}
 
 		want := []*filing.Filing{}
@@ -67,10 +67,16 @@ func (s *Service) LoadFilings() error {
 			want = append(want, v)
 		}
 
-		// load missing filings into database, bucket and queue
+		// load missing filings into database and queue
 		for _, v := range want {
-			msg := &queue.FilMessage{Cik: cmp.Cik, Id: v.Id}
-			b, err := json.Marshal(msg)
+
+			err = s.db.InsertFiling(cmp.Cik, v)
+			if err != nil {
+				s.logger.Log(fmt.Sprintf("Database error: %s", err.Error()))
+				continue
+			}
+
+			b, err := json.Marshal(v)
 			if err != nil {
 				s.logger.Log(fmt.Sprintf("Serialization error: %s", err.Error()))
 				continue
@@ -80,18 +86,8 @@ func (s *Service) LoadFilings() error {
 				s.logger.Log(fmt.Sprintf("Queue error: %s", err.Error()))
 				continue
 			}
-			err = s.bucket.PutObject(v.Id+".htm", v.MainFile.Data)
-			if err != nil {
-				s.logger.Log(fmt.Sprintf("Bucket error: %s", err.Error()))
-				continue
-			}
-			err = s.db.InsertFiling(cmp.Cik, v)
-			if err != nil {
-				s.logger.Log(fmt.Sprintf("Database error: %s", err.Error()))
-				continue
-			}
 		}
 	}
 
-	return nil
+	return s.queue.Close()
 }

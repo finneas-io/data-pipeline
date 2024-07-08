@@ -1,160 +1,107 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
-	"fmt"
+	"log"
 	"os"
 
+	"github.com/aws/aws-sdk-go/aws"
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/finneas-io/data-pipeline/adapter/apiclient"
 	"github.com/finneas-io/data-pipeline/adapter/apiclient/httpclient"
 	"github.com/finneas-io/data-pipeline/adapter/bucket"
 	"github.com/finneas-io/data-pipeline/adapter/bucket/folder"
+	"github.com/finneas-io/data-pipeline/adapter/bucket/vault"
 	"github.com/finneas-io/data-pipeline/adapter/database"
 	"github.com/finneas-io/data-pipeline/adapter/database/postgres"
 	"github.com/finneas-io/data-pipeline/adapter/logger"
 	"github.com/finneas-io/data-pipeline/adapter/logger/console"
 	"github.com/finneas-io/data-pipeline/adapter/queue"
 	"github.com/finneas-io/data-pipeline/adapter/queue/buffer"
+	"github.com/finneas-io/data-pipeline/service/archive"
 	"github.com/finneas-io/data-pipeline/service/extract"
-	"github.com/finneas-io/data-pipeline/service/graph"
+	"github.com/finneas-io/data-pipeline/service/initial"
 	"github.com/finneas-io/data-pipeline/service/slice"
 	"github.com/joho/godotenv"
 )
 
 func main() {
-	err := godotenv.Load()
-	if err != nil {
-		panic(err)
+
+	if len(os.Args) < 2 {
+		panic(errors.New("One command line argument must be passed"))
 	}
+
+	godotenv.Load()
+	host := os.Getenv("DB_HOST")
+	port := os.Getenv("DB_PORT")
+	name := os.Getenv("DB_NAME")
+	user := os.Getenv("DB_USER")
+	pass := os.Getenv("DB_PASS")
+	archName := os.Getenv("ARCHIVE") // name of the glacier vault
+	region := os.Getenv("REGION")    // region for aws
 
 	var db database.Database
-	db, err = postgres.New(
-		envOrPanic("DB_HOST"),
-		envOrPanic("DB_PORT"),
-		envOrPanic("DB_NAME"),
-		envOrPanic("DB_USER"),
-		envOrPanic("DB_PASS"),
-	)
+	db, err := postgres.New(host, port, name, user, pass)
 	if err != nil {
 		panic(err)
 	}
-	defer db.Close()
 
-	var b bucket.Bucket
-	b = folder.New(
-		envOrPanic("B_PATH"),
-	)
+	var client apiclient.Client = httpclient.New()
+	var l logger.Logger = console.New()
 
-	var extQueue queue.Queue
-	extQueue = buffer.New()
+	if os.Args[1] == "init" {
+		var root bucket.Bucket = folder.New("./")
 
-	var sliQueue queue.Queue
-	sliQueue = buffer.New()
+		initService := initial.New(db, client, root, l)
 
-	var graQueue queue.Queue
-	graQueue = buffer.New()
-
-	var l logger.Logger
-	l = console.New()
-
-	var c apiclient.Client
-	c = httpclient.New()
-
-	loadCompanies(db, c, l)
-
-	e := extract.New(db, b, c, extQueue, l)
-	err = e.LoadFilings()
-	if err != nil {
-		panic(err)
-	}
-	extQueue.Close()
-
-	s := slice.New(db, b, extQueue, sliQueue, l)
-	err = s.SliceFilings()
-	if err != nil {
-		l.Log(fmt.Sprintf("Slice Filings: %s", err.Error()))
-	}
-	sliQueue.Close()
-
-	err = convertMessage(sliQueue, graQueue)
-	if err != nil {
-		l.Log(fmt.Sprintf("Map Filings: %s", err.Error()))
-	}
-	graQueue.Close()
-
-	g := graph.New(db, graQueue, l)
-	err = g.GraphFilings()
-	if err != nil {
-		l.Log(fmt.Sprintf("Graph Filings: %s", err.Error()))
-	}
-}
-
-func convertMessage(cons queue.Queue, prod queue.Queue) error {
-	cmps := make(map[string][]*queue.FilMessage)
-	for {
-		msgData, err := cons.RecvMessage()
+		err = initService.InitDatabase()
 		if err != nil {
-			return err
-		}
-		msg := &queue.FilMessage{}
-		err = json.Unmarshal(msgData, msg)
-		if err != nil {
-			return err
+			panic(err)
 		}
 
-		if cmps[msg.Cik] != nil {
-			for _, f := range cmps[msg.Cik] {
-				data := &queue.GraphMessage{
-					From: msg.Id,
-					To:   f.Id,
-				}
-				b, err := json.Marshal(data)
-				if err != nil {
-					return err
-				}
-				err = prod.SendMessage(b)
-				if err != nil {
-					return err
-				}
+		err = initService.LoadCompanies("ciks.json")
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	if os.Args[1] == "load" {
+		var exctQueue queue.Queue = buffer.New()
+		var slicQueue queue.Queue = buffer.New()
+
+		exctService := extract.New(db, client, exctQueue, l)
+
+		go func() {
+			err = exctService.LoadFilings()
+			if err != nil {
+				log.Println(err.Error())
 			}
-			cmps[msg.Cik] = append(cmps[msg.Cik], msg)
-		} else {
-			cmps[msg.Cik] = []*queue.FilMessage{msg}
-		}
-	}
-}
+		}()
 
-func loadCompanies(db database.Database, c apiclient.Client, l logger.Logger) {
-	data, err := os.ReadFile("./ciks.json")
-	if err != nil {
-		l.Log(fmt.Sprintf("File error while loading companies: %s", err.Error()))
-	}
-	wrapper := &struct {
-		Ciks []string `json:"ciks"`
-	}{}
-	err = json.Unmarshal(data, wrapper)
-	if err != nil {
-		l.Log(fmt.Sprintf("File error while loading companies: %s", err.Error()))
-	}
-	for _, v := range wrapper.Ciks {
-		cmp, err := c.GetCompany(v)
-		if err != nil {
-			l.Log(fmt.Sprintf("API error while loading companies: %s", err.Error()))
-			continue
-		}
-		err = db.InsertCompany(cmp)
-		if err != nil {
-			l.Log(fmt.Sprintf("Database error while loading companies: %s", err.Error()))
-			continue
-		}
-	}
-}
+		slicService := slice.New(db, exctQueue, slicQueue, l)
 
-func envOrPanic(key string) string {
-	value := os.Getenv(key)
-	if len(value) < 1 {
-		panic(errors.New(fmt.Sprintf("Environment variable '%s' missing", key)))
+		go func() {
+			err = slicService.SliceFilings()
+			if err != nil {
+				log.Println(err.Error())
+			}
+		}()
+
+		sess, err := session.NewSession(&aws.Config{
+			Region: aws.String(region),
+		})
+		if err != nil {
+			panic(err)
+		}
+
+		var a bucket.Bucket = vault.New(sess, archName)
+
+		archService := archive.New(db, a, slicQueue, l)
+
+		err = archService.StoreFiles()
+		if err != nil {
+			log.Println(err.Error())
+		}
 	}
-	return value
+
 }

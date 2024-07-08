@@ -61,7 +61,7 @@ func (c *httpClient) GetFilings(cik string) ([]*filing.Filing, error) {
 
 	// prepare result list and look up to avoid duplicates
 	lookup := make(map[string]*filing.Filing)
-	filings := res.Filings.Recent.transform(cik)
+	filings := res.Filings.Recent.transform()
 	for _, v := range filings {
 		lookup[v.Id] = v
 	}
@@ -76,7 +76,7 @@ func (c *httpClient) GetFilings(cik string) ([]*filing.Filing, error) {
 		if err := json.Unmarshal(data, filData); err != nil {
 			return nil, err
 		}
-		oldFils := filData.transform(cik)
+		oldFils := filData.transform()
 		for _, f := range oldFils {
 			if lookup[f.Id] == nil {
 				lookup[f.Id] = f
@@ -106,7 +106,7 @@ type filingData struct {
 	PrimDocs    []string `json:"primaryDocument"`
 }
 
-func (d *filingData) transform(cik string) []*filing.Filing {
+func (d *filingData) transform() []*filing.Filing {
 
 	filings := []*filing.Filing{}
 

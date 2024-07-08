@@ -14,10 +14,10 @@ import (
 )
 
 type Company struct {
-	Cik     string
-	Name    string
-	Tickers []*Ticker
-	Filings []*Filing
+	Cik     string    `json:"cik"`
+	Name    string    `json:"-"`
+	Tickers []*Ticker `json:"-"`
+	Filings []*Filing `json:"-"`
 }
 
 type Ticker struct {
@@ -26,28 +26,28 @@ type Ticker struct {
 }
 
 type Filing struct {
-	Id         string
-	Form       string
-	FilingDate time.Time
-	MainFile   *File
-	Tables     []*Table
+	Id         string    `json:"id"`
+	Form       string    `json:"form"`
+	FilingDate time.Time `json:"filing_date"`
+	MainFile   *File     `json:"main_file"`
+	Tables     []*Table  `json:"-"`
 }
 
 type File struct {
-	Key          string
-	LastModified time.Time
-	Data         []byte
+	Key          string    `json:"key"`
+	LastModified time.Time `json:"last_modified"`
+	Data         []byte    `json:"data"`
 }
 
 type Table struct {
-	Id      uuid.UUID
-	HeadIdx int
-	Index   int
-	Faktor  string
-	Data    matrix
+	Id        uuid.UUID
+	HeadIndex int
+	Index     int
+	Faktor    string
+	Data      matrix
 }
 
-type matrix [][]string
+type matrix [][][]string
 
 type Edge struct {
 	From   *Table
@@ -56,6 +56,10 @@ type Edge struct {
 }
 
 func (f *Filing) LoadTables() error {
+
+	if f.MainFile == nil {
+		return errors.New("Main file is nil")
+	}
 
 	document, err := toHtml(f.MainFile.Data)
 	if err != nil {
@@ -70,10 +74,10 @@ func (f *Filing) LoadTables() error {
 		tables = append(
 			tables,
 			&Table{
-				Index:   i,
-				Faktor:  searchStr(n, 8, 300, []string{"thousand", "million"}),
-				HeadIdx: head,
-				Data:    mat,
+				Index:     i,
+				Faktor:    searchStr(n, 8, 300, []string{"thousand", "million"}),
+				HeadIndex: head,
+				Data:      mat,
 			},
 		)
 	}
@@ -82,268 +86,31 @@ func (f *Filing) LoadTables() error {
 	return nil
 }
 
-func Connect(from *Filing, to *Filing) ([]*Edge, error) {
-
-	edges := []*Edge{}
-	for _, mainTbl := range from.Tables {
-		for _, t := range to.Tables {
-			weight := getWeight(mainTbl, t)
-			if weight < 2 {
-				continue
-			}
-			edges = append(
-				edges,
-				&Edge{From: mainTbl, To: t, Weight: weight},
-			)
-		}
-	}
-
-	return edges, nil
-}
-
-func Join(first *Table, second *Table) (*Table, error) {
-	if first == nil || second == nil {
-		return nil, errors.New("Tables must be not nil")
-	}
-
-	table := &Table{}
-
-	return table, nil
-}
-
-func (f *Filing) Json() ([]byte, error) {
-	return json.Marshal(f)
-}
-
-func (t *Table) Compress() error {
-	mat := t.Data.stripCells()
-	mat, headIdx := mat.dropEmptyRows(t.HeadIdx)
-	mat, err := mat.dropDuplCols()
-	if err != nil {
-		return err
-	}
-	mat, err = mat.mergeCols(headIdx)
-	if err != nil {
-		return err
-	}
-	t.Data = mat
-	t.HeadIdx = headIdx
-	return nil
-}
-
 func (m matrix) Json() ([]byte, error) {
 	return json.Marshal(m)
 }
 
-/*
-Helper functions
-*/
-
-func getWeight(first, second *Table) int {
-
-	rowLookup := make(map[string]bool)
-	for _, row := range first.Data {
-		if len(row) < 1 {
-			continue
-		}
-		rowLookup[row[0]] = true
-	}
-
-	weight := 0
-	for _, row := range second.Data {
-		if len(row) < 1 {
-			continue
-		}
-		if rowLookup[row[0]] {
-			weight++
-			rowLookup[row[0]] = false
-		}
-	}
-
-	if len(first.Data) < 1 || len(first.Data) >= first.HeadIdx || len(second.Data) >= second.HeadIdx {
-		return weight
-	}
-
-	columnLookup := []string{}
-	for i := 0; i < first.HeadIdx; i++ {
-		for j, column := range first.Data[i] {
-			if j == 0 {
-				continue
-			}
-			columnLookup = append(columnLookup, column)
-		}
-	}
-
-	for i := 0; i < second.HeadIdx; i++ {
-		for j, column := range second.Data[i] {
-			if j == 0 {
-				continue
-			}
-			for k := 0; k < len(columnLookup); k++ {
-				if columnLookup[k] == column {
-					columnLookup = append(columnLookup[:k], columnLookup[k+1:]...)
-					weight++
-					break
-				}
-			}
-		}
-		if len(columnLookup) < 1 {
-			break
-		}
-	}
-
-	return weight
+func toHtml(data []byte) (*html.Node, error) {
+	return html.Parse(bytes.NewReader(data))
 }
 
-func (m matrix) stripCells() matrix {
-	newMtrx := matrix{}
-	for i, r := range m {
-		newMtrx = append(newMtrx, []string{})
-		for _, c := range r {
-			newCell := ""
-			for j, char := range c {
-				// check ASCII table to understand this and good luck
-				if char < 33 || char > 126 {
-					if len(c)-1 == j {
-						break
-					}
-					if len(newCell) < 1 {
-						continue
-					}
-					if newCell[len(newCell)-1:] == " " {
-						continue
-					}
-					newCell += " "
-					continue
-				}
-				newCell += string(char)
-			}
-			newMtrx[i] = append(newMtrx[i], newCell)
+func getNodes(node *html.Node, nType string) []*html.Node {
+
+	nodes := []*html.Node{}
+
+	var crawler func(node *html.Node)
+	crawler = func(node *html.Node) {
+		if node.Type == html.ElementNode && node.Data == nType {
+			nodes = append(nodes, node)
+			return
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			crawler(child)
 		}
 	}
-	return newMtrx
-}
+	crawler(node)
 
-func (m matrix) dropEmptyRows(head int) (matrix, int) {
-	newMtrx := matrix{}
-	newHead := head
-	for i := range m {
-		empty := true
-		for j := range m[i] {
-			if len(m[i][j]) > 0 {
-				newMtrx = append(newMtrx, m[i])
-				empty = false
-				break
-			}
-		}
-		if empty && i <= head {
-			newHead--
-		}
-	}
-	return newMtrx, newHead
-}
-
-func (m matrix) mergeCols(head int) (matrix, error) {
-
-	if head < 1 {
-		return m, nil
-	}
-
-	// initialize new matrix
-	newMtrx := matrix{}
-	for _, r := range m {
-		if len(r) < 1 {
-			return nil, errors.New("Matrix is ragged")
-		}
-		newMtrx = append(newMtrx, []string{r[0]})
-	}
-
-	for i := 1; i < len(m[0]); i++ {
-
-		// check if column and previous column can be merged
-		merge := true
-		for j := 0; j < head; j++ {
-			if len(m[j]) <= i {
-				return nil, errors.New("Matrix is ragged")
-			}
-			if m[j][i] != m[j][i-1] && len(m[j][i]) > 0 {
-				merge = false
-				break
-			}
-		}
-
-		if merge {
-			for j := 0; j < len(m); j++ {
-				if len(m[j]) <= i {
-					return nil, errors.New("Matrix is ragged")
-				}
-				if m[j][i] == m[j][i-1] {
-					continue
-				}
-				newMtrx[j][len(newMtrx[j])-1] += m[j][i]
-			}
-		} else {
-			// columns can't be merged and we just append the new column
-			for j := 0; j < len(m); j++ {
-				newMtrx[j] = append(newMtrx[j], m[j][i])
-			}
-		}
-	}
-
-	return newMtrx, nil
-}
-
-func isHeader(row []string) bool {
-	if len(row) < 1 {
-		return false
-	}
-	if len(row[0]) < 1 {
-		return true
-	}
-	return false
-}
-
-func (m matrix) dropDuplCols() (matrix, error) {
-	tMtrx, err := m.transpose()
-	if err != nil {
-		return nil, err
-	}
-
-	if len(tMtrx) < 1 {
-		return m, nil
-	}
-	prev := tMtrx[0]
-	newMtrx := matrix{prev}
-	for i := range tMtrx {
-		for j := range tMtrx[i] {
-			if tMtrx[i][j] != prev[j] {
-				newMtrx = append(newMtrx, tMtrx[i])
-				break
-			}
-		}
-		prev = tMtrx[i]
-	}
-
-	return newMtrx.transpose()
-}
-
-func (m matrix) transpose() (matrix, error) {
-	if len(m) < 1 {
-		return m, nil
-	}
-
-	newMtrx := matrix{}
-	for i := 0; i < len(m[0]); i++ {
-		newMtrx = append(newMtrx, []string{})
-		for j := 0; j < len(m); j++ {
-			if len(m[j]) != len(m[0]) {
-				return nil, errors.New("Matrix is ragged")
-			}
-			newMtrx[i] = append(newMtrx[i], m[j][i])
-		}
-	}
-
-	return newMtrx, nil
+	return nodes
 }
 
 func convert(table *html.Node) (matrix, int) {
@@ -372,7 +139,7 @@ func convert(table *html.Node) (matrix, int) {
 			}
 		}
 
-		matrix = append(matrix, []string{})
+		matrix = append(matrix, [][]string{})
 		cols := getNodes(r, "td")
 		for _, c := range cols {
 
@@ -409,42 +176,24 @@ func convert(table *html.Node) (matrix, int) {
 	return matrix, headIdx
 }
 
-func getText(node *html.Node) string {
-	str := ""
-	var crawler func(node *html.Node)
-	crawler = func(node *html.Node) {
-		if node.Type == html.TextNode {
-			str += node.Data
-			return
-		}
-		for child := node.FirstChild; child != nil; child = child.NextSibling {
-			crawler(child)
-		}
-	}
-	crawler(node)
-	return str
-}
-
-func getNodes(node *html.Node, nType string) []*html.Node {
-
-	nodes := []*html.Node{}
-
-	var crawler func(node *html.Node)
-	crawler = func(node *html.Node) {
-		if node.Type == html.ElementNode && node.Data == nType {
-			nodes = append(nodes, node)
-			return
-		}
-		for child := node.FirstChild; child != nil; child = child.NextSibling {
-			crawler(child)
-		}
-	}
-	crawler(node)
-
-	return nodes
-}
-
 func searchStr(node *html.Node, maxDist, maxLen int, queries []string) string {
+
+	var crawler func(node *html.Node, except *html.Node) string
+	crawler = func(node *html.Node, except *html.Node) string {
+		if node == except {
+			return ""
+		}
+
+		if node.Type == html.TextNode {
+			return node.Data
+		}
+
+		result := ""
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			result += crawler(child, except)
+		}
+		return result
+	}
 
 	current := node
 	for maxDist > 0 {
@@ -462,13 +211,16 @@ func searchStr(node *html.Node, maxDist, maxLen int, queries []string) string {
 			current = current.PrevSibling
 		}
 
-		if current.Type == html.TextNode && len(current.Data) <= maxLen {
-			str := getLetters(current.Data)
-			// check if the content contains one of the filter values
-			for _, q := range queries {
-				if strings.Contains(str, q) {
-					return current.Data
-				}
+		str := crawler(current, node)
+		if len(str) > maxLen {
+			break
+		}
+
+		letts := getLetters(str)
+		// check if the content contains one of the filter values
+		for _, q := range queries {
+			if strings.Contains(letts, q) {
+				return str
 			}
 		}
 	}
@@ -487,6 +239,20 @@ func getLetters(str string) string {
 	return result
 }
 
-func toHtml(data []byte) (*html.Node, error) {
-	return html.Parse(bytes.NewReader(data))
+// we return a string array here to make not assumption how to seperate
+// the data of the text nodes
+func getText(node *html.Node) []string {
+	result := []string{}
+	var crawler func(node *html.Node)
+	crawler = func(node *html.Node) {
+		if node.Type == html.TextNode {
+			result = append(result, node.Data)
+			return
+		}
+		for child := node.FirstChild; child != nil; child = child.NextSibling {
+			crawler(child)
+		}
+	}
+	crawler(node)
+	return result
 }

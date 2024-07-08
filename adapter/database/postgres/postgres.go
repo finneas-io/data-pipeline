@@ -3,62 +3,106 @@ package postgres
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
+	"github.com/finneas-io/data-pipeline/adapter/database"
 	"github.com/finneas-io/data-pipeline/domain/filing"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type postgresDB struct {
-	conn *pgx.Conn
+	conn *pgxpool.Pool
 }
 
 func New(host, port, name, user, pass string) (*postgresDB, error) {
 
-	conn, err := pgx.Connect(
+	conn, err := pgxpool.New(
 		context.Background(),
 		fmt.Sprintf("postgres://%s:%s@%s:%s/%s", user, pass, host, port, name),
 	)
 	if err != nil {
 		return nil, err
 	}
-	db := &postgresDB{conn: conn}
 
-	err = db.createTables()
-	if err != nil {
-		return nil, err
-	}
-
-	return db, nil
+	return &postgresDB{conn: conn}, nil
 }
 
 func (db *postgresDB) Close() error {
-	return db.conn.Close(context.Background())
+	db.conn.Close()
+	return nil
+}
+
+func (db *postgresDB) CreateBaseTables() error {
+
+	_, err := db.conn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS company (
+		cik VARCHAR(10) PRIMARY KEY,
+		name VARCHAR(100) NOT NULL
+	);`)
+	if err != nil {
+		return err
+	}
+
+	_, err = db.conn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS ticker (
+		id SERIAL PRIMARY KEY,
+		company_cik VARCHAR(10) REFERENCES company(cik) ON DELETE CASCADE,
+		value VARCHAR(10) UNIQUE NOT NULL,
+		exchange VARCHAR(20) DEFAULT NULL
+	);`)
+	if err != nil {
+		return err
+	}
+
+	_, err = db.conn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS filing (
+		id VARCHAR(20) PRIMARY KEY,
+		company_cik VARCHAR(10) REFERENCES company(cik) ON DELETE CASCADE,
+		form VARCHAR(20) NOT NULL,
+		filing_date TIMESTAMP DEFAULT NULL,
+		last_modified TIMESTAMP DEFAULT NULL,
+		original_file VARCHAR(200) NOT NULL,
+		fully_stored BOOLEAN DEFAULT false
+	);`)
+	if err != nil {
+		return err
+	}
+
+	_, err = db.conn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS "table" (
+		id UUID PRIMARY KEY,
+		filing_id VARCHAR(20) REFERENCES filing(id) ON DELETE CASCADE,
+		header_index INTEGER NOT NULL,
+		index INTEGER NOT NULL,
+		factor TEXT DEFAULT NULL,
+		data JSONB NOT NULL,
+		CONSTRAINT unique_filing_id_index UNIQUE(filing_id, index)
+	);`)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (db *postgresDB) InsertCompany(cmp *filing.Company) error {
 
-	_, err := db.conn.Exec(
-		context.Background(),
-		`INSERT INTO company (cik, name) VALUES ($1, $2);`,
-		cmp.Cik,
-		cmp.Name,
-	)
-	if err != nil {
+	_, err := db.conn.Exec(context.Background(), `INSERT INTO company (cik, name) VALUES ($1, $2);`, cmp.Cik, cmp.Name)
+	err = errorWrapper(err)
+	if err != nil && err != database.DuplicateErr {
 		return err
 	}
 
 	for _, t := range cmp.Tickers {
 		_, err := db.conn.Exec(
 			context.Background(),
-			`INSERT INTO ticker (value, exchange) VALUES ($1, $2);`,
+			`INSERT INTO ticker (company_cik, value, exchange) VALUES ($1, $2, $3);`,
+			cmp.Cik,
 			t.Value,
 			t.Exchange,
 		)
-		if err != nil {
+		err = errorWrapper(err)
+		if err != nil && err != database.DuplicateErr {
 			return err
 		}
 	}
@@ -66,7 +110,7 @@ func (db *postgresDB) InsertCompany(cmp *filing.Company) error {
 	return nil
 }
 
-func (db *postgresDB) GetCompnies() ([]*filing.Company, error) {
+func (db *postgresDB) GetCompanies() ([]*filing.Company, error) {
 
 	rows, err := db.conn.Query(context.Background(), `SELECT cik FROM company;`)
 	if err != nil {
@@ -86,41 +130,49 @@ func (db *postgresDB) GetCompnies() ([]*filing.Company, error) {
 	return cmps, nil
 }
 
-func nullTime(t time.Time) sql.NullTime {
-	if t.IsZero() {
-		return sql.NullTime{Valid: false}
-	}
-	return sql.NullTime{Valid: true, Time: t}
-}
-
 func (db *postgresDB) InsertFiling(cik string, fil *filing.Filing) error {
+
 	_, err := db.conn.Exec(
 		context.Background(),
-		`INSERT INTO filing (
-			company_cik, 
-			id, 
-			form, 
-			filing_date, 
-			last_modified, 
-			original_file
-		) VALUES ($1, $2, $3, $4, $5, $6);`,
-		cik,
+		`INSERT INTO filing (id, company_cik, form, filing_date, last_modified, original_file) 
+			VALUES ($1, $2, $3, $4, $5, $6);`,
 		fil.Id,
+		cik,
 		fil.Form,
 		nullTime(fil.FilingDate),
 		nullTime(fil.MainFile.LastModified),
 		fil.MainFile.Key,
 	)
+
 	if err != nil {
+		err = errorWrapper(err)
+		// filing might already be stored in which case we are happi big time :)
+		if err == database.DuplicateErr {
+			return nil
+		}
 		return err
 	}
+
 	return nil
 }
 
+func (db *postgresDB) UpdateStoredFiling(id string) error {
+
+	_, err := db.conn.Exec(
+		context.Background(),
+		`UPDATE filing SET fully_stored = true WHERE id = $1;`,
+		id,
+	)
+
+	return err
+}
+
+// we return a map so we can compare which filings are still missing (faster than a list)
 func (db *postgresDB) GetFilings(cik string) (map[string]*filing.Filing, error) {
+
 	rows, err := db.conn.Query(
 		context.Background(),
-		`SELECT id FROM filing WHERE filing.company_cik = $1;`,
+		`SELECT id FROM filing WHERE filing.company_cik = $1 AND filing.fully_stored = true;`,
 		cik,
 	)
 	if err != nil {
@@ -149,151 +201,44 @@ func (db *postgresDB) InsertTable(filId string, table *filing.Table, data []byte
 
 	_, err = db.conn.Exec(
 		context.Background(),
-		`INSERT INTO "table" (id, filing_id, index, faktor, header_index, data) 
+		`INSERT INTO "table" (id, filing_id, index, factor, header_index, data) 
 			VALUES ($1, $2, $3, $4, $5, $6);`,
 		id,
 		filId,
 		table.Index,
 		table.Faktor,
-		table.HeadIdx,
+		table.HeadIndex,
 		data,
 	)
-	if err != nil {
-		return uuid.UUID{}, err
-	}
 
-	return id, nil
+	return id, errorWrapper(err)
 }
 
-func (db *postgresDB) InsertCompTable(table *filing.Table, data []byte) error {
+// Helper Functions
 
-	id, err := uuid.NewV7()
-	if err != nil {
-		return err
+// to insert null into database timestamps
+func nullTime(t time.Time) sql.NullTime {
+	if t.IsZero() {
+		return sql.NullTime{Valid: false}
 	}
-
-	_, err = db.conn.Exec(
-		context.Background(),
-		`INSERT INTO compressed_table (id, original_id, header_index, data) 
-			VALUES ($1, $2, $3, $4);`,
-		id,
-		table.Id,
-		table.HeadIdx,
-		data,
-	)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return sql.NullTime{Valid: true, Time: t}
 }
 
-func (db *postgresDB) GetTables(filId string) ([]*filing.Table, error) {
+// my error wrapper to use custom created error constants defined in database package
+func errorWrapper(err error) error {
 
-	rows, err := db.conn.Query(
-		context.Background(),
-		`SELECT compressed_table.id, compressed_table.data FROM "table", compressed_table
-			WHERE "table".filing_id = $1 AND compressed_table.original_id = "table".id;`,
-		filId,
-	)
-	if err != nil {
-		return nil, err
+	// check if error is even present
+	if err == nil {
+		return nil
 	}
-	defer rows.Close()
 
-	tables := []*filing.Table{}
-	for rows.Next() {
-		tbl := &filing.Table{}
-		data := []byte{}
-		if err := rows.Scan(&tbl.Id, &data); err != nil {
-			return nil, err
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		// SQL Error code for violated unique constraint
+		if pgErr.Code == "23505" {
+			return database.DuplicateErr
 		}
-		err = json.Unmarshal(data, &tbl.Data)
-		if err != nil {
-			return nil, err
-		}
-		tables = append(tables, tbl)
 	}
 
-	return tables, nil
-}
-
-func (db *postgresDB) InsertEdge(edge *filing.Edge) error {
-
-	_, err := db.conn.Exec(
-		context.Background(),
-		`INSERT INTO edge ("from", "to", weight) VALUES ($1, $2, $3);`,
-		edge.From.Id,
-		edge.To.Id,
-		edge.Weight,
-	)
 	return err
-}
-
-func (db *postgresDB) createTables() error {
-
-	_, err := db.conn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS company (
-		cik VARCHAR(10) PRIMARY KEY,
-		name VARCHAR(100) NOT NULL
-	);`)
-	if err != nil {
-		return err
-	}
-
-	_, err = db.conn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS ticker (
-		id SERIAL PRIMARY KEY,
-		company_cik VARCHAR(10) REFERENCES company(cik) ON DELETE CASCADE,
-		value VARCHAR(10) UNIQUE NOT NULL,
-		exchange VARCHAR(20) DEFAULT NULL
-	);`)
-	if err != nil {
-		return err
-	}
-
-	_, err = db.conn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS filing (
-		id VARCHAR(20) PRIMARY KEY,
-		company_cik VARCHAR(10) REFERENCES company(cik) ON DELETE CASCADE,
-		form VARCHAR(20) NOT NULL,
-		filing_date TIMESTAMP DEFAULT NULL,
-		last_modified TIMESTAMP DEFAULT NULL,
-		original_file VARCHAR(200) NOT NULL
-	);`)
-	if err != nil {
-		return err
-	}
-
-	_, err = db.conn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS "table" (
-		id UUID PRIMARY KEY,
-		filing_id VARCHAR(20) REFERENCES filing(id) ON DELETE CASCADE,
-		header_index INTEGER NOT NULL,
-		index INTEGER NOT NULL,
-		faktor TEXT DEFAULT NULL,
-		data JSONB NOT NULL,
-		UNIQUE(filing_id, index)
-	);`)
-	if err != nil {
-		return err
-	}
-
-	_, err = db.conn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS compressed_table (
-		id UUID PRIMARY KEY,
-		original_id UUID REFERENCES "table"(id) ON DELETE CASCADE,
-		header_index INTEGER NOT NULL,
-		data JSONB NOT NULL
-	);`)
-	if err != nil {
-		return err
-	}
-
-	_, err = db.conn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS edge (
-		"from" UUID REFERENCES compressed_table(id) NOT NULl,
-		"to" UUID REFERENCES compressed_table(id) NOT NULl,
-		weight INTEGER NOT NULL,
-		UNIQUE("from", "to")
-	);`)
-	if err != nil {
-		return err
-	}
-
-	return nil
 }
