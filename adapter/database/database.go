@@ -16,6 +16,8 @@ type Database interface {
 	InsertFiling(cik string, fil *filing.Filing) error
 	GetFilings(cik string) (map[string]*filing.Filing, error)
 	InsertTable(filId string, table *filing.Table, data []byte) (uuid.UUID, error)
+	InsertCompTable(table *filing.Table, data []byte) error
+	GetTables(limit, page int) ([]*filing.Table, error)
 }
 
 var DuplicateErr error = errors.New("Duplicate key error")

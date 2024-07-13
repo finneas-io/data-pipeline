@@ -30,7 +30,7 @@ type Filing struct {
 	Form       string    `json:"form"`
 	FilingDate time.Time `json:"filing_date"`
 	MainFile   *File     `json:"main_file"`
-	Tables     []*Table  `json:"-"`
+	Tables     []*Table  `json:"tables"`
 }
 
 type File struct {
@@ -43,11 +43,13 @@ type Table struct {
 	Id        uuid.UUID
 	HeadIndex int
 	Index     int
-	Faktor    string
+	Factor    string
 	Data      matrix
+	CompData  compMatrix
 }
 
 type matrix [][][]string
+type compMatrix [][]string
 
 type Edge struct {
 	From   *Table
@@ -75,7 +77,7 @@ func (f *Filing) LoadTables() error {
 			tables,
 			&Table{
 				Index:     i,
-				Faktor:    searchStr(n, 8, 300, []string{"thousand", "million"}),
+				Factor:    searchStr(n, 8, 300, []string{"thousand", "million"}),
 				HeadIndex: head,
 				Data:      mat,
 			},
@@ -86,8 +88,215 @@ func (f *Filing) LoadTables() error {
 	return nil
 }
 
+func (t *Table) Compress() error {
+
+	mat := t.Data.sumCells()
+	mat = mat.stripCells()
+	mat, headIdx := mat.dropEmptyRows(t.HeadIndex)
+	mat, err := mat.dropDuplCols()
+	if err != nil {
+		return err
+	}
+	mat, err = mat.mergeCols(headIdx)
+	if err != nil {
+		return err
+	}
+	t.Factor = stripFactor(t.Factor)
+	t.CompData = mat
+	t.HeadIndex = headIdx
+	return nil
+}
+
 func (m matrix) Json() ([]byte, error) {
 	return json.Marshal(m)
+}
+
+func (m compMatrix) Json() ([]byte, error) {
+	return json.Marshal(m)
+}
+
+func stripFactor(factor string) string {
+	if strings.Contains(factor, "thousand") {
+		return "thousand"
+	} else if strings.Contains(factor, "million") {
+		return "million"
+	}
+	return ""
+}
+
+func (m matrix) sumCells() compMatrix {
+
+	c := compMatrix{}
+	for i, row := range m {
+		c = append(c, []string{})
+		for _, col := range row {
+			concatCell := ""
+			for _, cell := range col {
+				concatCell += cell
+				concatCell += " "
+			}
+			c[i] = append(c[i], concatCell)
+		}
+	}
+
+	return c
+}
+
+func (m compMatrix) stripCells() compMatrix {
+	newMtrx := compMatrix{}
+	for i, r := range m {
+		newMtrx = append(newMtrx, []string{})
+		for _, c := range r {
+			newCell := ""
+			for j, char := range c {
+				// check ASCII table to understand this and good luck
+				if char < 33 || char > 126 {
+					if len(c)-1 == j {
+						break
+					}
+					if len(newCell) < 1 {
+						continue
+					}
+					if newCell[len(newCell)-1:] == " " {
+						continue
+					}
+					newCell += " "
+					continue
+				}
+				newCell += string(char)
+			}
+
+			// maybe not?
+			if len(newCell) > 0 && newCell[len(newCell)-1:] == " " {
+				newCell = newCell[:len(newCell)-1]
+			}
+
+			newMtrx[i] = append(newMtrx[i], newCell)
+		}
+	}
+	return newMtrx
+}
+
+func (m compMatrix) dropEmptyRows(head int) (compMatrix, int) {
+	newMtrx := compMatrix{}
+	newHead := head
+	for i := range m {
+		empty := true
+		for j := range m[i] {
+			if len(m[i][j]) > 0 {
+				newMtrx = append(newMtrx, m[i])
+				empty = false
+				break
+			}
+		}
+		if empty && i <= head {
+			newHead--
+		}
+	}
+	return newMtrx, newHead
+}
+
+func (m compMatrix) mergeCols(head int) (compMatrix, error) {
+
+	if head < 1 {
+		return m, nil
+	}
+
+	// initialize new matrix
+	newMtrx := compMatrix{}
+	for _, r := range m {
+		if len(r) < 1 {
+			return nil, errors.New("Matrix is ragged")
+		}
+		newMtrx = append(newMtrx, []string{r[0]})
+	}
+
+	for i := 1; i < len(m[0]); i++ {
+
+		// check if column and previous column can be merged
+		merge := true
+		for j := 0; j < head; j++ {
+			if len(m[j]) <= i {
+				return nil, errors.New("Matrix is ragged")
+			}
+			if m[j][i] != m[j][i-1] && len(m[j][i]) > 0 {
+				merge = false
+				break
+			}
+		}
+
+		if merge {
+			for j := 0; j < len(m); j++ {
+				if len(m[j]) <= i {
+					return nil, errors.New("Matrix is ragged")
+				}
+				if m[j][i] == m[j][i-1] {
+					continue
+				}
+				newMtrx[j][len(newMtrx[j])-1] += m[j][i]
+			}
+		} else {
+			// columns can't be merged and we just append the new column
+			for j := 0; j < len(m); j++ {
+				newMtrx[j] = append(newMtrx[j], m[j][i])
+			}
+		}
+	}
+
+	return newMtrx, nil
+}
+
+func isHeader(row []string) bool {
+	if len(row) < 1 {
+		return false
+	}
+	if len(row[0]) < 1 {
+		return true
+	}
+	return false
+}
+
+func (m compMatrix) dropDuplCols() (compMatrix, error) {
+	tMtrx, err := m.transpose()
+	if err != nil {
+		return nil, err
+	}
+
+	if len(tMtrx) < 1 {
+		return m, nil
+	}
+	prev := tMtrx[0]
+	newMtrx := compMatrix{prev}
+	for i := range tMtrx {
+		for j := range tMtrx[i] {
+			if tMtrx[i][j] != prev[j] {
+				newMtrx = append(newMtrx, tMtrx[i])
+				break
+			}
+		}
+		prev = tMtrx[i]
+	}
+
+	return newMtrx.transpose()
+}
+
+func (m compMatrix) transpose() (compMatrix, error) {
+	if len(m) < 1 {
+		return m, nil
+	}
+
+	newMtrx := compMatrix{}
+	for i := 0; i < len(m[0]); i++ {
+		newMtrx = append(newMtrx, []string{})
+		for j := 0; j < len(m); j++ {
+			if len(m[j]) != len(m[0]) {
+				return nil, errors.New("Matrix is ragged")
+			}
+			newMtrx[i] = append(newMtrx[i], m[j][i])
+		}
+	}
+
+	return newMtrx, nil
 }
 
 func toHtml(data []byte) (*html.Node, error) {

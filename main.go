@@ -19,6 +19,7 @@ import (
 	"github.com/finneas-io/data-pipeline/adapter/queue"
 	"github.com/finneas-io/data-pipeline/adapter/queue/buffer"
 	"github.com/finneas-io/data-pipeline/service/archive"
+	"github.com/finneas-io/data-pipeline/service/compress"
 	"github.com/finneas-io/data-pipeline/service/extract"
 	"github.com/finneas-io/data-pipeline/service/initial"
 	"github.com/finneas-io/data-pipeline/service/slice"
@@ -105,4 +106,11 @@ func main() {
 		}
 	}
 
+	if os.Args[1] == "compress" {
+		compService := compress.New(db, l)
+		err := compService.CompressTables()
+		if err != nil {
+			panic(err)
+		}
+	}
 }

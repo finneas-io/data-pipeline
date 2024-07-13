@@ -74,9 +74,20 @@ func (db *postgresDB) CreateBaseTables() error {
 		filing_id VARCHAR(20) REFERENCES filing(id) ON DELETE CASCADE,
 		header_index INTEGER NOT NULL,
 		index INTEGER NOT NULL,
-		factor TEXT DEFAULT NULL,
+		factor TEXT NOT NULL,
 		data JSONB NOT NULL,
 		CONSTRAINT unique_filing_id_index UNIQUE(filing_id, index)
+	);`)
+	if err != nil {
+		return err
+	}
+
+	_, err = db.conn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS compressed_table (
+		id UUID PRIMARY KEY,
+		original_id UUID REFERENCES "table"(id) ON DELETE CASCADE UNIQUE,
+		factor VARCHAR(20) NOT NULL,
+		header_index INTEGER NOT NULL,
+		data JSONB NOT NULL
 	);`)
 	if err != nil {
 		return err
@@ -206,12 +217,58 @@ func (db *postgresDB) InsertTable(filId string, table *filing.Table, data []byte
 		id,
 		filId,
 		table.Index,
-		table.Faktor,
+		table.Factor,
 		table.HeadIndex,
 		data,
 	)
 
 	return id, errorWrapper(err)
+}
+
+func (db *postgresDB) InsertCompTable(table *filing.Table, data []byte) error {
+
+	id, err := uuid.NewV7()
+	if err != nil {
+		return err
+	}
+
+	_, err = db.conn.Exec(
+		context.Background(),
+		`INSERT INTO compressed_table (id, original_id, factor, header_index, data) 
+			VALUES ($1, $2, $3, $4, $5);`,
+		id,
+		table.Id,
+		table.Factor,
+		table.HeadIndex,
+		data,
+	)
+
+	return errorWrapper(err)
+}
+
+func (db *postgresDB) GetTables(limit, page int) ([]*filing.Table, error) {
+
+	rows, err := db.conn.Query(
+		context.Background(),
+		`SELECT id, index, factor, header_index, data FROM "table" ORDER BY id ASC LIMIT $1 OFFSET $2;`,
+		limit,
+		page*limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	tables := []*filing.Table{}
+	for rows.Next() {
+		tbl := &filing.Table{}
+		if err := rows.Scan(&tbl.Id, &tbl.Index, &tbl.Factor, &tbl.HeadIndex, &tbl.Data); err != nil {
+			return nil, err
+		}
+		tables = append(tables, tbl)
+	}
+
+	return tables, nil
 }
 
 // Helper Functions
