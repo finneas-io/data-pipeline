@@ -19,5 +19,6 @@ RUN go build -o main main.go
 FROM arm64v8/alpine:3.20
 
 COPY --from=build /app/main /main
+COPY --from=build /app/ciks.json /ciks.json
 
 ENTRYPOINT [ "/main" ]

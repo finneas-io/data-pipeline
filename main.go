@@ -39,6 +39,7 @@ func main() {
 	pass := os.Getenv("DB_PASS")
 	archName := os.Getenv("ARCHIVE") // name of the glacier vault
 	region := os.Getenv("REGION")    // region for aws
+	entry := os.Getenv("ENTRY")
 
 	var db database.Database
 	db, err := postgres.New(host, port, name, user, pass)
@@ -50,7 +51,7 @@ func main() {
 	var l logger.Logger = console.New()
 
 	if os.Args[1] == "init" {
-		var root bucket.Bucket = folder.New("./")
+		var root bucket.Bucket = folder.New(entry)
 
 		initService := initial.New(db, client, root, l)
 
