@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"strconv"
 	"strings"
 	"time"
@@ -44,6 +45,7 @@ type Table struct {
 	HeadIndex int
 	Index     int
 	Factor    string
+	RawData   string
 	Data      matrix
 	CompData  compMatrix
 }
@@ -73,12 +75,17 @@ func (f *Filing) LoadTables() error {
 	tables := []*Table{}
 	for i, n := range nodes {
 		mat, head := convert(n)
+		str, err := toStr(n)
+		if err != nil {
+			return err
+		}
 		tables = append(
 			tables,
 			&Table{
 				Index:     i,
 				Factor:    searchStr(n, 8, 300, []string{"thousand", "million"}),
 				HeadIndex: head,
+				RawData:   str,
 				Data:      mat,
 			},
 		)
@@ -464,4 +471,14 @@ func getText(node *html.Node) []string {
 	}
 	crawler(node)
 	return result
+}
+
+func toStr(node *html.Node) (string, error) {
+	var buf bytes.Buffer
+	w := io.Writer(&buf)
+	err := html.Render(w, node)
+	if err != nil {
+		return "", err
+	}
+	return buf.String(), nil
 }

@@ -75,6 +75,7 @@ func (db *postgresDB) CreateBaseTables() error {
 		header_index INTEGER NOT NULL,
 		index INTEGER NOT NULL,
 		factor TEXT NOT NULL,
+		raw_data TEXT NOT NULL,
 		data JSONB NOT NULL,
 		CONSTRAINT unique_filing_id_index UNIQUE(filing_id, index)
 	);`)
@@ -212,13 +213,14 @@ func (db *postgresDB) InsertTable(filId string, table *filing.Table, data []byte
 
 	_, err = db.conn.Exec(
 		context.Background(),
-		`INSERT INTO "table" (id, filing_id, index, factor, header_index, data) 
-			VALUES ($1, $2, $3, $4, $5, $6);`,
+		`INSERT INTO "table" (id, filing_id, index, factor, header_index, raw_data, data) 
+			VALUES ($1, $2, $3, $4, $5, $6, $7);`,
 		id,
 		filId,
 		table.Index,
 		table.Factor,
 		table.HeadIndex,
+		table.RawData,
 		data,
 	)
 
