@@ -77,6 +77,7 @@ func (db *postgresDB) CreateBaseTables() error {
 		factor TEXT NOT NULL,
 		raw_data TEXT NOT NULL,
 		data JSONB NOT NULL,
+		label VARCHAR(50) DEFAULT NULL,
 		CONSTRAINT unique_filing_id_index UNIQUE(filing_id, index)
 	);`)
 	if err != nil {
