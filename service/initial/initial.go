@@ -4,20 +4,20 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/finneas-io/data-pipeline/adapter/apiclient"
 	"github.com/finneas-io/data-pipeline/adapter/bucket"
+	"github.com/finneas-io/data-pipeline/adapter/client"
 	"github.com/finneas-io/data-pipeline/adapter/database"
 	"github.com/finneas-io/data-pipeline/adapter/logger"
 )
 
 type Service struct {
 	db     database.Database
-	client apiclient.Client
+	client client.Client
 	bucket bucket.Bucket
 	logger logger.Logger
 }
 
-func New(db database.Database, client apiclient.Client, b bucket.Bucket, l logger.Logger) *Service {
+func New(db database.Database, client client.Client, b bucket.Bucket, l logger.Logger) *Service {
 	return &Service{db: db, client: client, bucket: b, logger: l}
 }
 

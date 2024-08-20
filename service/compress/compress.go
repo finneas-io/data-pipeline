@@ -21,7 +21,7 @@ func (s *Service) CompressTables() error {
 
 	for {
 
-		tables, err := s.db.GetTables(100, count)
+		tables, err := s.db.GetAllTables(100, count)
 		if err != nil {
 			s.logger.Log(fmt.Sprintf("Database error: %s", err.Error()))
 		}

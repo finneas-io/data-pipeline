@@ -10,7 +10,7 @@ import (
 	"github.com/ory/dockertest/v3/docker"
 )
 
-var db *postgresDB
+var db *postgres
 
 func TestMain(m *testing.M) {
 	// uses a sensible default on windows (tcp/http) and linux/osx (socket)

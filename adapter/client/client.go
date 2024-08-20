@@ -1,4 +1,4 @@
-package apiclient
+package client
 
 import "github.com/finneas-io/data-pipeline/domain/filing"
 

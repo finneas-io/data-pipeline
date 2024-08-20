@@ -7,21 +7,25 @@ import (
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
-	"github.com/finneas-io/data-pipeline/adapter/apiclient"
-	"github.com/finneas-io/data-pipeline/adapter/apiclient/httpclient"
 	"github.com/finneas-io/data-pipeline/adapter/bucket"
 	"github.com/finneas-io/data-pipeline/adapter/bucket/folder"
 	"github.com/finneas-io/data-pipeline/adapter/bucket/vault"
+	"github.com/finneas-io/data-pipeline/adapter/client"
+	"github.com/finneas-io/data-pipeline/adapter/client/httpclnt"
 	"github.com/finneas-io/data-pipeline/adapter/database"
 	"github.com/finneas-io/data-pipeline/adapter/database/postgres"
 	"github.com/finneas-io/data-pipeline/adapter/logger"
 	"github.com/finneas-io/data-pipeline/adapter/logger/console"
 	"github.com/finneas-io/data-pipeline/adapter/queue"
 	"github.com/finneas-io/data-pipeline/adapter/queue/buffer"
+	"github.com/finneas-io/data-pipeline/adapter/server/httpserv"
 	"github.com/finneas-io/data-pipeline/service/archive"
+	"github.com/finneas-io/data-pipeline/service/auth"
 	"github.com/finneas-io/data-pipeline/service/compress"
+	"github.com/finneas-io/data-pipeline/service/create"
 	"github.com/finneas-io/data-pipeline/service/extract"
 	"github.com/finneas-io/data-pipeline/service/initial"
+	"github.com/finneas-io/data-pipeline/service/label"
 	"github.com/finneas-io/data-pipeline/service/slice"
 	"github.com/joho/godotenv"
 )
@@ -38,21 +42,18 @@ func main() {
 	name := os.Getenv("DB_NAME")
 	user := os.Getenv("DB_USER")
 	pass := os.Getenv("DB_PASS")
-	archName := os.Getenv("ARCHIVE") // name of the glacier vault
-	region := os.Getenv("REGION")    // region for aws
-	entry := os.Getenv("ENTRY")
 
+	// adapter which are needed in all commands
 	var db database.Database
 	db, err := postgres.New(host, port, name, user, pass)
 	if err != nil {
 		panic(err)
 	}
-
-	var client apiclient.Client = httpclient.New()
 	var l logger.Logger = console.New()
 
 	if os.Args[1] == "init" {
-		var root bucket.Bucket = folder.New(entry)
+		var client client.Client = httpclnt.New()
+		var root bucket.Bucket = folder.New(".")
 
 		initService := initial.New(db, client, root, l)
 
@@ -68,6 +69,7 @@ func main() {
 	}
 
 	if os.Args[1] == "load" {
+		var client client.Client = httpclnt.New()
 		var exctQueue queue.Queue = buffer.New()
 		var slicQueue queue.Queue = buffer.New()
 
@@ -89,6 +91,7 @@ func main() {
 			}
 		}()
 
+		region := os.Getenv("REGION") // region for aws
 		sess, err := session.NewSession(&aws.Config{
 			Region: aws.String(region),
 		})
@@ -96,6 +99,7 @@ func main() {
 			panic(err)
 		}
 
+		archName := os.Getenv("ARCHIVE") // name of the glacier vault
 		var a bucket.Bucket = vault.New(sess, archName)
 
 		archService := archive.New(db, a, slicQueue, l)
@@ -112,5 +116,20 @@ func main() {
 		if err != nil {
 			panic(err)
 		}
+	}
+
+	if os.Args[1] == "create" {
+		if len(os.Args) != 3 {
+			panic(errors.New("Exactly one additional argument is required for this command"))
+		}
+		crteService := create.New(db, l)
+		err := crteService.CreateUser(os.Args[2])
+		if err != nil {
+			panic(err)
+		}
+	}
+
+	if os.Args[1] == "webserver" {
+		panic(httpserv.New(8000, auth.New(db, l), label.New(db, l)).Listen())
 	}
 }

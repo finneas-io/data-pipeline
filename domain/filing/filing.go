@@ -16,14 +16,14 @@ import (
 
 type Company struct {
 	Cik     string    `json:"cik"`
-	Name    string    `json:"-"`
-	Tickers []*Ticker `json:"-"`
-	Filings []*Filing `json:"-"`
+	Name    string    `json:"name"`
+	Tickers []*Ticker `json:"tickers"`
+	Filings []*Filing `json:"filings"`
 }
 
 type Ticker struct {
-	Value    string
-	Exchange string
+	Value    string `json:"value"`
+	Exchange string `json:"exchange"`
 }
 
 type Filing struct {
@@ -41,13 +41,14 @@ type File struct {
 }
 
 type Table struct {
-	Id        uuid.UUID
-	HeadIndex int
-	Index     int
-	Factor    string
-	RawData   string
-	Data      matrix
-	CompData  compMatrix
+	Id         uuid.UUID  `json:"id"`
+	OriginalId uuid.UUID  `json:"original_id"`
+	HeadIndex  int        `json:"head_index"`
+	Index      int        `json:"index"`
+	Factor     string     `json:"factor"`
+	CompData   compMatrix `json:"data"`
+	RawData    string     `json:"raw_data"`
+	Data       matrix     `json:"-"`
 }
 
 type matrix [][][]string

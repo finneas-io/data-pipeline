@@ -9,16 +9,17 @@ import (
 
 	"github.com/finneas-io/data-pipeline/adapter/database"
 	"github.com/finneas-io/data-pipeline/domain/filing"
+	"github.com/finneas-io/data-pipeline/domain/user"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-type postgresDB struct {
+type postgres struct {
 	conn *pgxpool.Pool
 }
 
-func New(host, port, name, user, pass string) (*postgresDB, error) {
+func New(host, port, name, user, pass string) (*postgres, error) {
 
 	conn, err := pgxpool.New(
 		context.Background(),
@@ -28,15 +29,15 @@ func New(host, port, name, user, pass string) (*postgresDB, error) {
 		return nil, err
 	}
 
-	return &postgresDB{conn: conn}, nil
+	return &postgres{conn: conn}, nil
 }
 
-func (db *postgresDB) Close() error {
+func (db *postgres) Close() error {
 	db.conn.Close()
 	return nil
 }
 
-func (db *postgresDB) CreateBaseTables() error {
+func (db *postgres) CreateBaseTables() error {
 
 	_, err := db.conn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS company (
 		cik VARCHAR(10) PRIMARY KEY,
@@ -77,7 +78,6 @@ func (db *postgresDB) CreateBaseTables() error {
 		factor TEXT NOT NULL,
 		raw_data TEXT NOT NULL,
 		data JSONB NOT NULL,
-		label VARCHAR(50) DEFAULT NULL,
 		CONSTRAINT unique_filing_id_index UNIQUE(filing_id, index)
 	);`)
 	if err != nil {
@@ -95,10 +95,38 @@ func (db *postgresDB) CreateBaseTables() error {
 		return err
 	}
 
+	_, err = db.conn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS "user" (
+		id UUID PRIMARY KEY,
+		username VARCHAR(100) NOT NULL UNIQUE,
+		password VARCHAR(100)
+	);`)
+	if err != nil {
+		return err
+	}
+
+	_, err = db.conn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS "session" (
+		token VARCHAR(100) PRIMARY KEY,
+		user_id UUID REFERENCES "user"(id) ON DELETE CASCADE UNIQUE,
+		expires_at TIMESTAMP NOT NULL
+	);`)
+	if err != nil {
+		return err
+	}
+
+	_, err = db.conn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS table_label (
+		table_id UUID REFERENCES "table"(id) ON DELETE CASCADE,
+		user_id UUID REFERENCES "user"(id) ON DELETE CASCADE,
+		label VARCHAR(100) NOT NULL,
+		PRIMARY KEY (table_id, user_id)
+	);`)
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
-func (db *postgresDB) InsertCompany(cmp *filing.Company) error {
+func (db *postgres) InsertCompany(cmp *filing.Company) error {
 
 	_, err := db.conn.Exec(context.Background(), `INSERT INTO company (cik, name) VALUES ($1, $2);`, cmp.Cik, cmp.Name)
 	err = errorWrapper(err)
@@ -123,7 +151,7 @@ func (db *postgresDB) InsertCompany(cmp *filing.Company) error {
 	return nil
 }
 
-func (db *postgresDB) GetCompanies() ([]*filing.Company, error) {
+func (db *postgres) GetCompanies() ([]*filing.Company, error) {
 
 	rows, err := db.conn.Query(context.Background(), `SELECT cik FROM company;`)
 	if err != nil {
@@ -143,7 +171,7 @@ func (db *postgresDB) GetCompanies() ([]*filing.Company, error) {
 	return cmps, nil
 }
 
-func (db *postgresDB) InsertFiling(cik string, fil *filing.Filing) error {
+func (db *postgres) InsertFiling(cik string, fil *filing.Filing) error {
 
 	_, err := db.conn.Exec(
 		context.Background(),
@@ -169,7 +197,7 @@ func (db *postgresDB) InsertFiling(cik string, fil *filing.Filing) error {
 	return nil
 }
 
-func (db *postgresDB) UpdateStoredFiling(id string) error {
+func (db *postgres) UpdateStoredFiling(id string) error {
 
 	_, err := db.conn.Exec(
 		context.Background(),
@@ -181,7 +209,7 @@ func (db *postgresDB) UpdateStoredFiling(id string) error {
 }
 
 // we return a map so we can compare which filings are still missing (faster than a list)
-func (db *postgresDB) GetFilings(cik string) (map[string]*filing.Filing, error) {
+func (db *postgres) GetFilings(cik string) (map[string]*filing.Filing, error) {
 
 	rows, err := db.conn.Query(
 		context.Background(),
@@ -205,7 +233,7 @@ func (db *postgresDB) GetFilings(cik string) (map[string]*filing.Filing, error) 
 	return fils, nil
 }
 
-func (db *postgresDB) InsertTable(filId string, table *filing.Table, data []byte) (uuid.UUID, error) {
+func (db *postgres) InsertTable(filId string, table *filing.Table, data []byte) (uuid.UUID, error) {
 
 	id, err := uuid.NewV7()
 	if err != nil {
@@ -228,7 +256,7 @@ func (db *postgresDB) InsertTable(filId string, table *filing.Table, data []byte
 	return id, errorWrapper(err)
 }
 
-func (db *postgresDB) InsertCompTable(table *filing.Table, data []byte) error {
+func (db *postgres) InsertCompTable(table *filing.Table, data []byte) error {
 
 	id, err := uuid.NewV7()
 	if err != nil {
@@ -249,7 +277,7 @@ func (db *postgresDB) InsertCompTable(table *filing.Table, data []byte) error {
 	return errorWrapper(err)
 }
 
-func (db *postgresDB) GetTables(limit, page int) ([]*filing.Table, error) {
+func (db *postgres) GetAllTables(limit, page int) ([]*filing.Table, error) {
 
 	rows, err := db.conn.Query(
 		context.Background(),
@@ -274,6 +302,196 @@ func (db *postgresDB) GetTables(limit, page int) ([]*filing.Table, error) {
 	return tables, nil
 }
 
+func (db *postgres) GetCompTables(id string) ([]*filing.Table, error) {
+
+	rows, err := db.conn.Query(
+		context.Background(),
+		`SELECT compressed_table.id, compressed_table.original_id, "table".index, compressed_table.header_index, 
+			compressed_table.factor, compressed_table.data FROM compressed_table, "table"
+			WHERE compressed_table.original_id = "table".id AND "table".filing_id = $1
+			ORDER BY "table".index ASC;`,
+		id,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	tbls := []*filing.Table{}
+	for rows.Next() {
+		tbl := &filing.Table{}
+		if err := rows.Scan(
+			&tbl.Id,
+			&tbl.OriginalId,
+			&tbl.Index,
+			&tbl.HeadIndex,
+			&tbl.Factor,
+			&tbl.Data,
+		); err != nil {
+			return nil, err
+		}
+		tbls = append(tbls, tbl)
+	}
+
+	return tbls, nil
+}
+
+func (db *postgres) GetUser(username string) (*user.User, error) {
+
+	user := &user.User{Username: username}
+
+	err := db.conn.QueryRow(
+		context.Background(),
+		`SELECT "user".id, "user".password FROM "user" WHERE "user".username = $1;`,
+		username,
+	).Scan(&user.Id, &user.Password)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, database.NotFoundErr
+		}
+		return nil, err
+	}
+
+	return user, nil
+}
+
+func (db *postgres) InsertUser(user *user.User) error {
+
+	_, err := db.conn.Exec(
+		context.Background(),
+		`INSERT INTO "user" (id, username, password) VALUES ($1, $2, $3);`,
+		user.Id,
+		user.Username,
+		user.Password,
+	)
+	return errorWrapper(err)
+}
+
+func (db *postgres) UpdatePassword(user *user.User) error {
+
+	ct, err := db.conn.Exec(
+		context.Background(),
+		`UPDATE "user" SET password = $2 WHERE id = $1;`,
+		user.Id, user.Password,
+	)
+	if err != nil {
+		return err
+	}
+
+	if ct.RowsAffected() < 1 {
+		return database.NotFoundErr
+	}
+
+	return nil
+}
+
+func (db *postgres) InsertSession(sess *user.Session) error {
+
+	_, err := db.conn.Exec(
+		context.Background(),
+		`INSERT INTO "session" (token, user_id, expires_at) VALUES ($1, $2, $3);`,
+		sess.Token,
+		sess.User.Id,
+		sess.ExpiresAt,
+	)
+	return errorWrapper(err)
+}
+
+func (db *postgres) GetSession(token string) (*user.Session, error) {
+
+	u := &user.User{}
+	sess := &user.Session{Token: token, User: u}
+
+	err := db.conn.QueryRow(
+		context.Background(),
+		`SELECT user_id, expires_at FROM "session" WHERE token = $1;`,
+		token,
+	).Scan(&u.Id, &sess.ExpiresAt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return nil, database.NotFoundErr
+		}
+		return nil, err
+	}
+
+	return sess, nil
+}
+
+func (db *postgres) DeleteSession(token string) error {
+
+	ct, err := db.conn.Exec(
+		context.Background(),
+		`DELETE FROM "session" WHERE token = $1;`,
+		token,
+	)
+	if err != nil {
+		return err
+	}
+	if ct.RowsAffected() < 1 {
+		return database.NotFoundErr
+	}
+
+	return nil
+}
+
+func (db *postgres) GetRandomTables(userId uuid.UUID) ([]*filing.Company, error) {
+
+	rows, err := db.conn.Query(
+		context.Background(),
+		`SELECT company.cik, company.name, filing.id, filing.form, 
+			filing.original_file, "table".id, "table".raw_data
+			FROM "table"
+			JOIN filing ON "table".filing_id = filing.id
+			JOIN company ON filing.company_cik = company.cik
+			LEFT JOIN table_label ON "table".id = table_label.table_id 
+			AND table_label.user_id = $1
+			WHERE table_label.table_id IS NULL
+			ORDER BY RANDOM() LIMIT 100;`,
+		userId,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	cmps := []*filing.Company{}
+	for rows.Next() {
+
+		cmp := &filing.Company{
+			Filings: []*filing.Filing{{
+				Tables:   []*filing.Table{{}},
+				MainFile: &filing.File{},
+			}},
+		}
+		if err := rows.Scan(
+			cmp.Cik,
+			cmp.Name,
+			cmp.Filings[0].Id,
+			cmp.Filings[0].Form,
+			cmp.Filings[0].MainFile.Key,
+			cmp.Filings[0].Tables[0].Id,
+			cmp.Filings[0].Tables[0].RawData,
+		); err != nil {
+			return nil, err
+		}
+		cmps = append(cmps, cmp)
+	}
+
+	return cmps, nil
+}
+
+func (db *postgres) InsertLabel(tblId, userId uuid.UUID, label string) error {
+
+	_, err := db.conn.Exec(
+		context.Background(),
+		`INSERT INTO "table_label" (table_id, user_id, label) VALUES ($1, $2, $3);`,
+		tblId,
+		userId,
+		label,
+	)
+	return errorWrapper(err)
+}
+
 // Helper Functions
 
 // to insert null into database timestamps
@@ -294,9 +512,13 @@ func errorWrapper(err error) error {
 
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) {
-		// SQL Error code for violated unique constraint
+		// unique_violation
 		if pgErr.Code == "23505" {
 			return database.DuplicateErr
+		}
+		// foreign_key_violation
+		if pgErr.Code == "23503" {
+			return database.InvalidRefErr
 		}
 	}
 

@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/finneas-io/data-pipeline/adapter/apiclient"
+	"github.com/finneas-io/data-pipeline/adapter/client"
 	"github.com/finneas-io/data-pipeline/adapter/database"
 	"github.com/finneas-io/data-pipeline/adapter/logger"
 	"github.com/finneas-io/data-pipeline/adapter/queue"
@@ -13,14 +13,14 @@ import (
 
 type Service struct {
 	db     database.Database
-	client apiclient.Client
+	client client.Client
 	queue  queue.Queue
 	logger logger.Logger
 }
 
 func New(
 	db database.Database,
-	c apiclient.Client,
+	c client.Client,
 	q queue.Queue,
 	l logger.Logger,
 ) *Service {
