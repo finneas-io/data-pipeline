@@ -26,6 +26,7 @@ import (
 	"github.com/finneas-io/data-pipeline/service/extract"
 	"github.com/finneas-io/data-pipeline/service/initial"
 	"github.com/finneas-io/data-pipeline/service/label"
+	"github.com/finneas-io/data-pipeline/service/proxy"
 	"github.com/finneas-io/data-pipeline/service/slice"
 	"github.com/joho/godotenv"
 )
@@ -69,11 +70,11 @@ func main() {
 	}
 
 	if os.Args[1] == "load" {
-		var client client.Client = httpclnt.New()
+		var c client.Client = httpclnt.New()
 		var exctQueue queue.Queue = buffer.New()
 		var slicQueue queue.Queue = buffer.New()
 
-		exctService := extract.New(db, client, exctQueue, l)
+		exctService := extract.New(db, c, exctQueue, l)
 
 		go func() {
 			err = exctService.LoadFilings()
@@ -130,6 +131,7 @@ func main() {
 	}
 
 	if os.Args[1] == "webserver" {
-		panic(httpserv.New(8000, auth.New(db, l), label.New(db, l)).Listen())
+		var c client.Client = httpclnt.New()
+		panic(httpserv.New(8000, auth.New(db, l), label.New(db, l), proxy.New(c, l)).Listen())
 	}
 }

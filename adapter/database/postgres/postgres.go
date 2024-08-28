@@ -106,7 +106,7 @@ func (db *postgres) CreateBaseTables() error {
 
 	_, err = db.conn.Exec(context.Background(), `CREATE TABLE IF NOT EXISTS "session" (
 		token VARCHAR(100) PRIMARY KEY,
-		user_id UUID REFERENCES "user"(id) ON DELETE CASCADE UNIQUE,
+		user_id UUID REFERENCES "user"(id) ON DELETE CASCADE,
 		expires_at TIMESTAMP NOT NULL
 	);`)
 	if err != nil {
@@ -438,8 +438,8 @@ func (db *postgres) GetRandomTables(userId uuid.UUID) ([]*filing.Company, error)
 
 	rows, err := db.conn.Query(
 		context.Background(),
-		`SELECT company.cik, company.name, filing.id, filing.form, 
-			filing.original_file, "table".id, "table".raw_data
+		`SELECT company.cik, company.name, filing.id, filing.form, filing.filing_date,
+			filing.original_file, "table".id, "table".index, "table".raw_data
 			FROM "table"
 			JOIN filing ON "table".filing_id = filing.id
 			JOIN company ON filing.company_cik = company.cik
@@ -464,13 +464,15 @@ func (db *postgres) GetRandomTables(userId uuid.UUID) ([]*filing.Company, error)
 			}},
 		}
 		if err := rows.Scan(
-			cmp.Cik,
-			cmp.Name,
-			cmp.Filings[0].Id,
-			cmp.Filings[0].Form,
-			cmp.Filings[0].MainFile.Key,
-			cmp.Filings[0].Tables[0].Id,
-			cmp.Filings[0].Tables[0].RawData,
+			&cmp.Cik,
+			&cmp.Name,
+			&cmp.Filings[0].Id,
+			&cmp.Filings[0].Form,
+			&cmp.Filings[0].FilingDate,
+			&cmp.Filings[0].MainFile.Key,
+			&cmp.Filings[0].Tables[0].Id,
+			&cmp.Filings[0].Tables[0].Index,
+			&cmp.Filings[0].Tables[0].RawData,
 		); err != nil {
 			return nil, err
 		}

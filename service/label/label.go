@@ -58,7 +58,10 @@ func (s *service) RandomTable(userId uuid.UUID) (*filing.Company, error) {
 
 func (s *service) CreateLabel(tblId, userId uuid.UUID, label string) error {
 
-	if label != "cash flow statement" && label != "balance sheet" && label != "financial statement" {
+	if label != "cash flow statement" &&
+		label != "balance sheet" &&
+		label != "financial statement" &&
+		label != "other" {
 		return InvalidLabelErr
 	}
 

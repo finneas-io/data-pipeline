@@ -8,6 +8,7 @@ import (
 
 	"github.com/finneas-io/data-pipeline/service/auth"
 	"github.com/finneas-io/data-pipeline/service/label"
+	"github.com/finneas-io/data-pipeline/service/proxy"
 	"github.com/google/uuid"
 )
 
@@ -16,14 +17,16 @@ type httpServer struct {
 	port   int
 	auth   auth.Service
 	label  label.Service
+	proxy  proxy.Service
 }
 
-func New(port int, authServ auth.Service, lblServ label.Service) *httpServer {
-	s := &httpServer{port: port, auth: authServ, label: lblServ}
+func New(port int, authServ auth.Service, lblServ label.Service, prxServ proxy.Service) *httpServer {
+	s := &httpServer{port: port, auth: authServ, label: lblServ, proxy: prxServ}
 	router := http.NewServeMux()
 	router.HandleFunc("/login", s.handleLogin)
 	router.HandleFunc("/table", s.handleRandomTable)
 	router.HandleFunc("/table/{id}", s.handleTableLabel)
+	router.HandleFunc("/filing/{cik}/{id}/{key}", s.handleFilingProxy)
 	s.router = router
 	return s
 }
@@ -78,6 +81,13 @@ func (s *httpServer) handleLogin(w http.ResponseWriter, r *http.Request) {
 func (s *httpServer) handleRandomTable(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 
+	if r.Method == "OPTIONS" {
+		w.Header().Set("Access-Control-Allow-Headers", "X-Session-Token")
+		w.Header().Set("Access-Control-Allow-Methods", "GET")
+		fmt.Fprint(w, "Success")
+		return
+	}
+
 	if r.Method != "GET" {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
@@ -93,13 +103,14 @@ func (s *httpServer) handleRandomTable(w http.ResponseWriter, r *http.Request) {
 		if err == label.NoTblLeftErr {
 			http.Error(w, err.Error(), http.StatusNotFound)
 		} else {
-			http.Error(w, "Internal Server", http.StatusNotFound)
+			http.Error(w, "Internal Server", http.StatusInternalServerError)
 		}
 		return
 	}
 
 	b, err := json.Marshal(tbl)
 	if err != nil {
+		// this should be logged
 		http.Error(w, "Internal Server", http.StatusInternalServerError)
 		return
 	}
@@ -109,6 +120,13 @@ func (s *httpServer) handleRandomTable(w http.ResponseWriter, r *http.Request) {
 
 func (s *httpServer) handleTableLabel(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if r.Method == "OPTIONS" {
+		w.Header().Set("Access-Control-Allow-Headers", "X-Session-Token")
+		w.Header().Set("Access-Control-Allow-Methods", "POST")
+		fmt.Fprint(w, "Success")
+		return
+	}
 
 	if r.Method != "POST" {
 		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
@@ -148,6 +166,36 @@ func (s *httpServer) handleTableLabel(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusCreated)
 	fmt.Fprint(w, "Success")
+}
+
+func (s *httpServer) handleFilingProxy(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+
+	if r.Method == "OPTIONS" {
+		w.Header().Set("Access-Control-Allow-Headers", "X-Session-Token")
+		w.Header().Set("Access-Control-Allow-Methods", "GET")
+		fmt.Fprint(w, "Success")
+		return
+	}
+
+	if r.Method != "GET" {
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	_, err := s.handleAuth(w, r)
+	if err != nil {
+		return
+	}
+
+	data, err := s.proxy.GetFiling(r.PathValue("cik"), r.PathValue("id"), r.PathValue("key"))
+	if err != nil {
+		http.Error(w, "Not Found", http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, string(data))
 }
 
 func (s *httpServer) handleAuth(w http.ResponseWriter, r *http.Request) (uuid.UUID, error) {
